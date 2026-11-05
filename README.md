@@ -18,15 +18,15 @@ Para compilar localmente: `./gradlew assembleDebug` (precisa do Android SDK e JD
 | Recurso | Como funciona |
 |---|---|
 | 6 slots de sample | Cada slot tem até 8 vozes, 5 efeitos próprios e volume/attack/release/pan |
-| **Slicer** | 4/8/16/32 fatias; toque numa fatia; altura do toque = velocity |
-| **Looper** | Dois dedos definem início e fim do loop; mover juntos desloca a janela |
+| **Slicer** | 4/8/16/32 fatias ou **fatias manuais** (botão de marcador: toque cria, arraste move, toque no marcador apaga, segurar volta à grade) e **detecção automática de batidas** (estrela); altura do toque = velocity |
+| **Looper** | Dois dedos definem o loop com duração exata; **cruzar os dedos toca em reverse**; 4/8/16/32 prende os marcadores na grade; mover juntos desloca a janela |
 | **Bow** | Grão do som em loop sob o dedo (textura/pad); altura muda o tamanho do grão |
 | **Tape** | Arraste para direita acelera, esquerda inverte; soltar = tape stop |
-| **Scratch** | Posição segue o dedo; dedo parado = silêncio |
+| **Scratch** | O dedo arrasta o playhead (largura da tela = 0,25–2 s de áudio conforme a altura); movimento suave, dedo parado = silêncio |
 | **Arpeggiator** | Dispara trechos nas subdivisões do BPM; vários dedos = sequência; 🎲 = aleatório |
 | **Keyboard** | 24 teclas cromáticas; ∞ sustenta; curva = legato (glide) |
 | **Loop Player** | Loop travado no BPM do projeto; toque liga/desliga (ou gate) |
-| Efeitos XY | Distortion, Filter (LP/HP), Amp Mod, Feedback Delay sincronizado, Reverb; "M" aplica no master; "hold" trava o efeito ligado |
+| Efeitos XY | Distortion, **Filter LP/HP** (botão LP/HP ou toque de novo no ícone; a curva real aparece no pad), Amp Mod, Feedback Delay sincronizado, **Reverb de rede de atrasos (FDN) estéreo** com decay de 0,4 a 8 s (x) e wet (y) que some por completo ao soltar; "M" aplica no master; "hold" trava o efeito ligado. Entrada e saída dos efeitos são suavizadas (sem estalos) |
 | Gravador de gestos | ● grava seus dedos por 1–128 compassos a partir do próximo compasso e repete em loop; troque o modo durante o loop para mudar como ele soa |
 | Resample | Botão de círculos duplos grava o mix final num slot; microfone grava no slot |
 | Importar | WAV, AIFF (direto) e MP3/M4A/OGG/FLAC (decodificador do Android) |
@@ -36,9 +36,9 @@ Para compilar localmente: `./gradlew assembleDebug` (precisa do Android SDK e JD
 ## Controles da tela
 
 - **Gf**: menu (projetos, MIDI). **Metrônomo**, **BPM** (arraste para cima/baixo, ou toque no ritmo), volume master, **■** corta todas as vozes, **?** ajuda.
-- Linha de modos: os 8 ícones. **Pasta** carrega arquivo no slot; **gate** liga o modo "só toca enquanto segura".
+- Linha de modos: os 8 ícones. **Pasta** carrega arquivo no slot; **◀|** inverte o sample (toque de novo restaura). O modo gate fica no menu do slot (segure o slot).
 - Sliders: volume · attack · release · pan.
-- Botões `0 4 8 16 32`: fatias do Slicer / passos por compasso do Arpeggiator. `-12 -1 0 +1 +12`: transposição.
+- Botões `0 4 8 16 32`: fatias do Slicer / passos por compasso do Arpeggiator / grade dos marcadores do Looper (0 = livre). Ao lado: estrela (auto-fatiar, no Slicer) ou dado (aleatório, no Arp) e o botão de editar fatias. `-12 -1 0 +1 +12`: transposição.
 - Linha de gestos: ● grava, número = compassos (toque para mudar), ✕ apaga, ∞ sustenta.
 - Rodapé: ▶/■ transporte, os 6 slots (toque seleciona, **segure** para o menu), microfone, mix.
 

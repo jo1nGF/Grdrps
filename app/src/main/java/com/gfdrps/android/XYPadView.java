@@ -105,19 +105,25 @@ public final class XYPadView extends View {
         p.setStyle(Paint.Style.FILL);
         p.setColor(0x99FFFFFF);
         p.setTextSize(Math.min(w, h) * 0.075f);
-        c.drawText((master ? "MASTER · " : "") + Fx.NAMES[fxIndex] + (latch ? "  (hold)" : ""), w * 0.03f, h * 0.1f, p);
+        String extra = fxIndex == Fx.FILTER ? (((Fx.Filter) ef).highPass ? " · HIGH-PASS" : " · LOW-PASS") : "";
+        c.drawText((master ? "MASTER · " : "") + Fx.NAMES[fxIndex] + extra + (latch ? "  (hold)" : ""), w * 0.03f, h * 0.1f, p);
     }
 
     /** A small sketch of what the effect does along x, just for orientation. */
     private float curve(float x, Fx.Effect ef) {
         switch (fxIndex) {
-            case Fx.DIST: return (float) Math.tanh((x * 6f) - 2f) * 0.5f + 0.5f;
             case Fx.FILTER: {
-                float fc = tx;
-                float res = 0.15f + 0.6f * ty;
-                float d = (x - fc) * 6f;
-                return (float) (1f / (1f + Math.exp(d * 2)) * 0.6f + res * Math.exp(-d * d));
+                // true magnitude response of the 2nd-order state-variable filter, -40..+20 dB
+                Fx.Filter f = (Fx.Filter) ef;
+                double fc = f.cutoffHz(), k = f.damping();
+                double fr = 40.0 * Math.pow(400.0, x);
+                double r = fr / fc;
+                double den = Math.sqrt((1 - r * r) * (1 - r * r) + k * k * r * r);
+                double mag = (f.highPass ? r * r : 1.0) / Math.max(1e-6, den);
+                double db = 20 * Math.log10(Math.max(1e-6, mag));
+                return (float) Math.max(0.0, Math.min(1.0, (db + 40.0) / 60.0));
             }
+            case Fx.DIST: return (float) Math.tanh((x * 6f) - 2f) * 0.5f + 0.5f;
             case Fx.AMP: return 0.5f + 0.4f * (float) Math.sin(x * (3f + tx * 20f) * Math.PI) * ty;
             case Fx.DELAY: return (float) Math.pow(0.5f + 0.4f * ty, x * 6f);
             default: return (float) Math.exp(-x * (5f - tx * 4f)) * (0.3f + 0.7f * ty);

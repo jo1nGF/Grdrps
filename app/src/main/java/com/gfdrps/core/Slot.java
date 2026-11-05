@@ -1,12 +1,10 @@
 package com.gfdrps.core;
 
-import java.util.ArrayList;
-
 /** One of the 6 sample slots: sample, 8 play modes, 8 voices, 5 effects, gesture recorder. Audio-thread only. */
 public final class Slot {
     public static final int SLICER = 0, LOOPER = 1, BOW = 2, TAPE = 3, SCRATCH = 4, ARP = 5, KEYBOARD = 6, LOOPPLAYER = 7;
     public static final String[] MODE_NAMES = {"Slicer", "Looper", "Bow", "Tape", "Scratch", "Arpeggiator", "Keyboard", "Loop Player"};
-    public static final int VOICES = 8, KEYS = 24, MAX_BLOCK = 512;
+    public static final int VOICES = 12, POLY = 8, KEYS = 24, MAX_BLOCK = 512;
     public static final int[] DIVS = {0, 4, 8, 16, 32};
 
     final int rate;
@@ -15,10 +13,13 @@ public final class Slot {
     // user parameters (written from UI thread, read on audio thread: plain volatiles)
     public volatile int mode = SLICER;
     public volatile float volume = 0.8f, attack = 0f, release = 0.15f, pan = 0.5f;
-    public volatile int div = 8;            // slices / arp steps per bar (0 = default 8)
+    public volatile int div = 0;            // slices / arp steps per bar (0 = default 8); looper marker quantize (0 = free)
     public volatile int transpose = 0;      // semitones
     public volatile boolean infinite = false, gate = false, legato = false, arpRandom = false, muted = false;
     public volatile double sampleBeats = 8;  // length of the sample in beats (loop player sync)
+    public volatile boolean reversed = false;
+    /** Manual slice boundaries (0..1, sorted, interior only). null = even grid from {@link #div}. */
+    public volatile float[] markers = null;
 
     public final Fx.Effect[] fx = new Fx.Effect[Fx.COUNT];
     public final GestureRecorder gestures = new GestureRecorder();
@@ -33,6 +34,8 @@ public final class Slot {
     // arp
     private double nextStepFrame = -1;
     private int arpIndex;
+    private Voice looperV;
+    private float curGL, curGR;
     // visual feedback (read by UI)
     public final float[] playheads = new float[VOICES];
     public volatile int activeVoices;
@@ -47,10 +50,56 @@ public final class Slot {
     public void setSample(Sample s, double bpm) {
         stopAll();
         sample = s;
+        markers = null;
+        reversed = false;
         if (s != null) {
             double dur = s.length() / (double) s.sampleRate;
             sampleBeats = Math.max(1, Math.round(dur * bpm / 60.0));
         }
+    }
+
+    /** Plays the sample backwards from now on (toggle: calling it again restores it). */
+    public void reverseSample() {
+        Sample s = sample;
+        if (s == null) return;
+        int n = s.length();
+        float[] d = new float[n];
+        for (int i = 0; i < n; i++) d[i] = s.data[n - 1 - i];
+        stopAll();
+        sample = new Sample(d, s.sampleRate, s.name);
+        reversed = !reversed;
+        float[] m = markers;
+        if (m != null) {
+            float[] nm = new float[m.length];
+            for (int i = 0; i < m.length; i++) nm[i] = 1f - m[m.length - 1 - i];
+            markers = nm;
+        }
+    }
+
+    /** Sorts, clamps and de-duplicates marker positions; returns null when there are none. */
+    public static float[] cleanMarkers(float[] in) {
+        if (in == null || in.length == 0) return null;
+        float[] c = in.clone();
+        java.util.Arrays.sort(c);
+        float[] out = new float[c.length];
+        int n = 0;
+        for (float v : c) {
+            if (!(v > 0.002f && v < 0.998f)) continue;
+            if (n > 0 && v - out[n - 1] < 0.004f) continue;
+            out[n++] = v;
+            if (n >= 63) break;
+        }
+        return n == 0 ? null : java.util.Arrays.copyOf(out, n);
+    }
+
+    /** Interior slice boundaries currently in use (manual markers or the even grid), for drawing. */
+    public float[] sliceBoundaries() {
+        float[] m = markers;
+        if (m != null) return m;
+        int n = sliceCount();
+        float[] g = new float[n - 1];
+        for (int i = 1; i < n; i++) g[i - 1] = i / (float) n;
+        return g;
     }
 
     public void stopAll() {
@@ -67,14 +116,25 @@ public final class Slot {
         return -1;
     }
 
+    /** Gives a free voice. Beyond POLY live voices the oldest one is faded out (no hard cut = no click). */
     private Voice alloc(long frame) {
-        Voice oldest = voices[0];
+        int live = 0;
+        Voice free = null, oldestLive = null;
         for (Voice v : voices) {
-            if (!v.active) { oldest = v; break; }
-            if (v.startedAt < oldest.startedAt) oldest = v;
+            if (!v.active) { if (free == null) free = v; continue; }
+            if (!v.releasing) {
+                live++;
+                if (oldestLive == null || v.startedAt < oldestLive.startedAt) oldestLive = v;
+            }
         }
-        oldest.kill();
-        return oldest;
+        if (live >= POLY && oldestLive != null) oldestLive.fastRelease();
+        if (free != null) return free;
+        Voice pick = null;
+        for (Voice v : voices) {
+            if (pick == null || (v.releasing && !pick.releasing) || (v.releasing == pick.releasing && v.startedAt < pick.startedAt)) pick = v;
+        }
+        pick.kill();
+        return pick;
     }
 
     private Voice prepare(int kind, long frame) {
@@ -112,11 +172,22 @@ public final class Slot {
         float vel = 0.25f + 0.75f * (1f - y);
         switch (mode) {
             case SLICER: {
-                int n = sliceCount();
-                int idx = Math.min(n - 1, (int) (x * n));
+                float[] mk = markers;
+                double a0, a1;
+                if (mk != null) {
+                    int idx = 0;
+                    while (idx < mk.length && x >= mk[idx]) idx++;
+                    a0 = idx == 0 ? 0.0 : mk[idx - 1];
+                    a1 = idx == mk.length ? 1.0 : mk[idx];
+                } else {
+                    int n = sliceCount();
+                    int idx = Math.min(n - 1, (int) (x * n));
+                    a0 = (double) idx / n;
+                    a1 = (double) (idx + 1) / n;
+                }
                 Voice v = prepare(Voice.PLAY, frame);
-                v.start = (double) idx * len / n;
-                v.end = (double) (idx + 1) * len / n;
+                v.start = a0 * len;
+                v.end = a1 * len;
                 v.pos = v.start;
                 v.loop = infinite;
                 v.vel = vel;
@@ -131,7 +202,7 @@ public final class Slot {
                 Voice v = prepare(Voice.BOW, frame);
                 v.center = x * (len - 1);
                 v.grainLen = (float) ((0.03 + (1.0 - y) * 0.17) * rate);
-                v.gStart[0] = v.gStart[1] = v.center;
+                v.gPos[0] = v.gPos[1] = v.center;
                 v.gPh[0] = 0f; v.gPh[1] = 0.5f;
                 v.vel = 0.7f;
                 v.trigger(id, frame);
@@ -152,7 +223,11 @@ public final class Slot {
             case SCRATCH: {
                 Voice v = prepare(Voice.SCRATCH, frame);
                 v.pos = x * (len - 1);
-                v.target = x;
+                v.center = x;                                   // x where the finger went down
+                v.scrBase = v.pos;
+                v.scrTarget = v.pos;
+                // full screen width = 0.25 s (finger low) .. 2 s (finger high) of audio
+                v.scrSpan = (0.25 + 1.75 * (1.0 - y)) * s.sampleRate;
                 v.vel = 0.9f;
                 v.trigger(id, frame);
                 tVoice[k] = v;
@@ -208,16 +283,19 @@ public final class Slot {
                 }
                 break;
             case TAPE:
-                if (v != null && v.active) v.speed = v.baseSpeed + (x - v.center) * 6.0;
+                if (v != null && v.active) { v.speedTgt = v.baseSpeed + (x - v.center) * 6.0; v.glide = 0.003f; }
                 break;
             case SCRATCH:
-                if (v != null && v.active) v.target = x;
+                if (v != null && v.active) {
+                    double t = v.scrBase + (x - v.center) * v.scrSpan;
+                    v.scrTarget = Math.max(0, Math.min(len - 1, t));
+                }
                 break;
             case KEYBOARD:
                 if (v != null && v.active) {
                     int key = Math.min(KEYS - 1, (int) (x * KEYS));
                     double sp = Math.pow(2.0, (key - KEYS / 2 + transpose) / 12.0);
-                    if (legato) v.speed = sp;
+                    if (legato) { v.speedTgt = sp; v.glide = 0.0015f; }
                 }
                 break;
             default: break;
@@ -244,30 +322,48 @@ public final class Slot {
         tVoice[tCount] = null;
     }
 
-    /** Looper: first two fingers define the loop region; one finger gives a short loop under it. */
+    /**
+     * Looper: the first two fingers set the loop region. Crossing them (second finger left of the first)
+     * plays it in reverse. With a quantize value (4/8/16/32) the markers snap to that grid, 0 = free.
+     */
     private void updateLooper(long frame, Sample s) {
         if (s == null) return;
         int len = s.length();
-        Voice lv = voices[0];
+        Voice lv = looperV;
         if (tCount == 0) {
             if (lv.active && lv.kind == Voice.PLAY && lv.touchId == -3) lv.release();
             return;
         }
         double a, b;
-        if (tCount >= 2) { a = Math.min(tX[0], tX[1]); b = Math.max(tX[0], tX[1]); }
-        else { a = tX[0]; b = Math.min(1.0, a + 1.0 / 32.0); a = Math.min(a, b - 1.0 / 64.0); }
-        double st = a * len, en = Math.max(st + 64, b * len);
-        if (en > len) { en = len; st = Math.max(0, en - 64); }
-        if (!(lv.active && lv.touchId == -3 && !lv.releasing)) {
-            lv.kill();
-            lv.sm = s; lv.kind = Voice.PLAY; lv.ratio = s.sampleRate / (double) rate; lv.engineRate = rate;
-            lv.setEnv(attack, release);
-            lv.speed = pitchRatio(); lv.vel = 0.9f; lv.loop = true;
-            lv.start = st; lv.end = en; lv.pos = st;
-            lv.trigger(-3, frame);
+        boolean reverse = false;
+        int q = div;
+        if (tCount >= 2) {
+            a = Math.min(tX[0], tX[1]);
+            b = Math.max(tX[0], tX[1]);
+            reverse = tX[1] < tX[0];
         } else {
-            lv.start = st; lv.end = en;
-            if (lv.pos < st || lv.pos >= en) lv.pos = st;
+            a = tX[0];
+            b = a + (q > 0 ? 1.0 / q : 1.0 / 32.0);
+        }
+        if (q > 0) {
+            a = Math.round(a * q) / (double) q;
+            b = Math.round(b * q) / (double) q;
+            if (b - a < 0.5 / q) b = a + 1.0 / q;
+        }
+        if (b > 1.0) { double w = b - a; b = 1.0; a = Math.max(0.0, b - w); }
+        double st = a * len, en = b * len;
+        if (en - st < 64) { en = Math.min(len, st + 64); st = Math.max(0, en - 64); }
+        double sp = reverse ? -pitchRatio() : pitchRatio();
+        if (!(lv != null && lv.active && lv.touchId == -3 && !lv.releasing)) {
+            lv = prepare(Voice.PLAY, frame);
+            lv.loop = true; lv.vel = 0.9f;
+            lv.start = st; lv.end = en; lv.speed = sp;
+            lv.pos = reverse ? en - 1 : st;
+            lv.trigger(-3, frame);
+            looperV = lv;
+        } else {
+            lv.speedTgt = sp; lv.glide = 0.02f;       // direction change glides through zero, no click
+            lv.setRegion(st, en);
         }
         for (int i = 0; i < tCount; i++) tVoice[i] = lv;
     }
@@ -332,10 +428,13 @@ public final class Slot {
         float gr = (float) Math.sin(p * Math.PI * 0.5) * 1.414f * 0.7071f;
         float v = muted ? 0f : volume;
         float peak = 0f;
+        final float tgtL = v * gl, tgtR = v * gr;
+        final float dL = (tgtL - curGL) / n, dR = (tgtR - curGR) / n;   // ramp per block: no zipper noise on sliders
         for (int i = 0; i < n; i++) {
-            bl[i] = mono[i] * v * gl;
-            br[i] = mono[i] * v * gr;
-            float a = Math.abs(mono[i] * v);
+            curGL += dL; curGR += dR;
+            bl[i] = mono[i] * curGL;
+            br[i] = mono[i] * curGR;
+            float a = Math.abs(mono[i]) * v;
             if (a > peak) peak = a;
         }
         for (int e = 0; e < Fx.COUNT; e++) fx[e].process(bl, br, n, bpm);

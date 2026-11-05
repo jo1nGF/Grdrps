@@ -32,6 +32,71 @@ public final class WaveView extends View {
         setBackgroundColor(Theme.WAVE_BG);
     }
 
+    // ---- manual slice editing (Slicer mode)
+    private boolean editSlices;
+    private float[] work;
+    private int grab = -1;
+    private boolean grabbedExisting, moved;
+    private float downPx;
+
+    public void setEditSlices(boolean e) { editSlices = e; if (!e) grab = -1; invalidate(); }
+    public boolean isEditSlices() { return editSlices; }
+
+    private float[] baseMarkers() {
+        Slot s = engine.slots[slotIndex];
+        float[] m = s.markers;
+        return m != null ? m.clone() : s.sliceBoundaries();   // first edit starts from the current even grid
+    }
+
+    private boolean editTouch(MotionEvent e) {
+        float w = Math.max(1, getWidth());
+        Slot sl = engine.slots[slotIndex];
+        int a = e.getActionMasked();
+        float x = clamp(e.getX() / w);
+        if (a == MotionEvent.ACTION_DOWN) {
+            getParent().requestDisallowInterceptTouchEvent(true);
+            float[] cur = baseMarkers();
+            int near = -1; float best = 0.03f;
+            for (int i = 0; i < cur.length; i++) if (Math.abs(cur[i] - x) < best) { best = Math.abs(cur[i] - x); near = i; }
+            if (near >= 0) { work = cur; grab = near; grabbedExisting = true; }
+            else {
+                float[] n = new float[cur.length + 1];
+                int at = 0;
+                while (at < cur.length && cur[at] < x) at++;
+                System.arraycopy(cur, 0, n, 0, at);
+                n[at] = snap(sl, x);
+                System.arraycopy(cur, at, n, at + 1, cur.length - at);
+                work = n; grab = at; grabbedExisting = false;
+                engine.setMarkers(slotIndex, work.clone());
+            }
+            downPx = e.getX(); moved = false;
+        } else if (a == MotionEvent.ACTION_MOVE && grab >= 0 && work != null) {
+            if (Math.abs(e.getX() - downPx) > 14) moved = true;
+            if (moved || !grabbedExisting) {
+                float lo = grab > 0 ? work[grab - 1] + 0.006f : 0.004f;
+                float hi = grab < work.length - 1 ? work[grab + 1] - 0.006f : 0.996f;
+                work[grab] = Math.max(lo, Math.min(hi, snap(sl, x)));
+                engine.setMarkers(slotIndex, work.clone());
+            }
+        } else if ((a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) && grab >= 0 && work != null) {
+            if (a == MotionEvent.ACTION_UP && grabbedExisting && !moved) {   // a plain tap on a marker removes it
+                float[] n = new float[work.length - 1];
+                System.arraycopy(work, 0, n, 0, grab);
+                System.arraycopy(work, grab + 1, n, grab, work.length - grab - 1);
+                engine.setMarkers(slotIndex, n);
+            }
+            grab = -1; work = null;
+        }
+        invalidate();
+        return true;
+    }
+
+    /** With a quantize value selected (4/8/16/32) markers snap to that grid. */
+    private static float snap(Slot s, float x) {
+        int q = s.div;
+        return q > 0 ? Math.round(x * q) / (float) q : x;
+    }
+
     public void setSlot(int s) {
         if (s == slotIndex) return;
         releaseAll();
@@ -49,6 +114,7 @@ public final class WaveView extends View {
     @Override protected void onDetachedFromWindow() { releaseAll(); super.onDetachedFromWindow(); }
 
     @Override public boolean onTouchEvent(MotionEvent e) {
+        if (editSlices && engine.slots[slotIndex].mode == Slot.SLICER) return editTouch(e);
         float w = Math.max(1, getWidth()), h = Math.max(1, getHeight());
         int act = e.getActionMasked();
         switch (act) {
@@ -126,7 +192,7 @@ public final class WaveView extends View {
             c.drawLine(0, mid, w, mid, p);
         }
 
-        if (mode == Slot.SLICER) drawGrid(c, w, h, s.div <= 0 ? 8 : s.div, 0x33FFFFFF);
+        if (mode == Slot.SLICER) drawSlices(c, w, h, s);
 
         // per-mode touch overlays
         p.setStyle(Paint.Style.STROKE);
@@ -188,6 +254,29 @@ public final class WaveView extends View {
         }
         postInvalidateOnAnimation();
     }
+
+    private void drawSlices(Canvas c, float w, float h, Slot s) {
+        float[] b = s.sliceBoundaries();
+        boolean manual = s.markers != null;
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(manual || editSlices ? 3f : 1.5f);
+        p.setColor(editSlices ? 0xFFFFD23F : (manual ? 0xAAFFFFFF : 0x33FFFFFF));
+        for (float v : b) c.drawLine(v * w, 0, v * w, h, p);
+        if (editSlices) {
+            p.setStyle(Paint.Style.FILL);
+            float t = Math.min(w, h) * 0.035f;
+            for (float v : b) {
+                path.reset();
+                path.moveTo(v * w - t, 0); path.lineTo(v * w + t, 0); path.lineTo(v * w, t * 1.6f); path.close();
+                c.drawPath(path, p);
+            }
+            p.setColor(0xCCFFD23F);
+            p.setTextSize(Math.min(w, h) * 0.06f);
+            c.drawText("EDITAR FATIAS: toque = novo marcador · arraste = mover · toque no marcador = apagar", w * 0.02f, h * 0.96f, p);
+        }
+    }
+
+    private final android.graphics.Path path = new android.graphics.Path();
 
     private void drawGrid(Canvas c, float w, float h, int n, int color) {
         p.setStyle(Paint.Style.STROKE);

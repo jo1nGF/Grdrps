@@ -46,7 +46,7 @@ public final class MainActivity extends Activity {
     private final Widgets.Tile[] divTiles = new Widgets.Tile[Slot.DIVS.length];
     private final Widgets.Tile[] fxTiles = new Widgets.Tile[Fx.COUNT];
     private final SlotStrip[] strips = new SlotStrip[Engine.SLOTS];
-    private Widgets.Tile gateT, diceT, glideT, infT, recGestT, barsT, metroT, playT, micT, mixT, trValT, masterFxT, latchT;
+    private Widgets.Tile revT, ctxT, edT, lphpT, glideT, infT, recGestT, barsT, metroT, playT, micT, mixT, trValT, masterFxT, latchT;
     private Widgets.Slider volS, attS, relS, panS, masterS;
     private BpmView bpmView;
     private int pendingMicMode = Engine.REC_OFF;
@@ -139,8 +139,8 @@ public final class MainActivity extends Activity {
         // row 2: file, gate, 8 modes
         LinearLayout r2 = row();
         r2.addView(tile().icon(Theme.I_FILE).accent(0xFFFFFFFF).onClick(this::pickFile), lp(1f));
-        gateT = tile().icon(Theme.I_GATE).accent(0xFFFFD23F).onClick(() -> { Slot s = engine.slots[sel]; s.gate = !s.gate; refresh(); });
-        r2.addView(gateT, lp(1f));
+        revT = tile().icon(Theme.I_REVERSE).accent(0xFF3DD6FF).onClick(() -> { engine.reverseSample(sel); ui.postDelayed(this::refresh, 120); });
+        r2.addView(revT, lp(1f));
         int[] modeIcons = {Theme.I_SLICER, Theme.I_LOOPER, Theme.I_BOW, Theme.I_TAPE, Theme.I_SCRATCH, Theme.I_ARP, Theme.I_KEYS, Theme.I_LOOPPLAY};
         for (int m = 0; m < 8; m++) {
             final int mm = m;
@@ -165,8 +165,11 @@ public final class MainActivity extends Activity {
             divTiles[k] = tile().text(String.valueOf(Slot.DIVS[k])).accent(0xFFFFFFFF).onClick(() -> { engine.slots[sel].div = Slot.DIVS[kk]; refresh(); });
             dr.addView(divTiles[k], lp(1f));
         }
-        diceT = tile().icon(Theme.I_DICE).accent(0xFFFF4FA3).onClick(() -> { Slot s = engine.slots[sel]; s.arpRandom = !s.arpRandom; refresh(); });
-        dr.addView(diceT, lp(1f));
+        ctxT = tile().icon(Theme.I_DICE).accent(0xFFFF4FA3).onClick(this::contextAction);   // Slicer: auto-slice · Arp: random
+        dr.addView(ctxT, lp(1f));
+        edT = tile().icon(Theme.I_MARK).accent(0xFFFFD23F).onClick(() -> { wave.setEditSlices(!wave.isEditSlices()); refresh(); })
+                .onLong(() -> { engine.setMarkers(sel, null); toast("Fatias voltaram para a grade"); });
+        dr.addView(edT, lp(1f));
         mid.addView(dr, lpv(1f));
         // transpose row
         LinearLayout tr = row();
@@ -199,9 +202,14 @@ public final class MainActivity extends Activity {
         int[] fxIcons = {Theme.I_DIST, Theme.I_FILTER, Theme.I_AMP, Theme.I_DELAY, Theme.I_REVERB};
         for (int f = 0; f < Fx.COUNT; f++) {
             final int ff = f;
-            fxTiles[f] = tile().icon(fxIcons[f]).accent(Theme.FX[f]).onClick(() -> { fxSel = ff; pad.select(sel, fxSel, masterFx); midi.selectedFx = ff; refresh(); });
+            fxTiles[f] = tile().icon(fxIcons[f]).accent(Theme.FX[f]).onClick(() -> {
+                if (ff == Fx.FILTER && fxSel == Fx.FILTER) { toggleFilterType(); return; }   // second tap = LP/HP
+                fxSel = ff; pad.select(sel, fxSel, masterFx); midi.selectedFx = ff; refresh();
+            });
             fxCol.addView(fxTiles[f], lpv(1f));
         }
+        lphpT = tile().text("LP").textScale(0.38f).accent(0xFF3DD6FF).onClick(this::toggleFilterType);
+        fxCol.addView(lphpT, lpv(0.8f));
         latchT = tile().text("hold").textScale(0.3f).accent(0xFFFFFFFF).onClick(() -> { pad.setLatch(!pad.isLatch()); latchT.setOn(pad.isLatch()); });
         fxCol.addView(latchT, lpv(0.8f));
         masterFxT = tile().text("M").accent(0xFFFFD23F).onClick(() -> { masterFx = !masterFx; pad.select(sel, fxSel, masterFx); refresh(); });
@@ -254,7 +262,17 @@ public final class MainActivity extends Activity {
         for (int m = 0; m < 8; m++) modeTiles[m].setOn(s.mode == m);
         for (int k = 0; k < Slot.DIVS.length; k++) divTiles[k].setOn(s.div == Slot.DIVS[k]);
         for (int f = 0; f < Fx.COUNT; f++) fxTiles[f].setOn(fxSel == f);
-        gateT.setOn(s.gate); diceT.setOn(s.arpRandom); glideT.setOn(s.legato); infT.setOn(s.infinite);
+        revT.setOn(s.reversed);
+        if (s.mode == Slot.SLICER) { ctxT.icon(Theme.I_AUTO).accent(Theme.MODE[0]); ctxT.setOn(false); ctxT.setDim(false); }
+        else if (s.mode == Slot.ARP) { ctxT.icon(Theme.I_DICE).accent(0xFFFF4FA3); ctxT.setOn(s.arpRandom); ctxT.setDim(false); }
+        else { ctxT.icon(Theme.I_DICE); ctxT.setOn(false); ctxT.setDim(true); }
+        if (s.mode != Slot.SLICER && wave.isEditSlices()) wave.setEditSlices(false);
+        edT.setOn(wave.isEditSlices()); edT.setDim(s.mode != Slot.SLICER);
+        boolean isFilter = fxSel == Fx.FILTER;
+        boolean hp = isFilter && ((Fx.Filter) (masterFx ? engine.master[fxSel] : s.fx[fxSel])).highPass;
+        lphpT.text(hp ? "HP" : "LP"); lphpT.setOn(isFilter); lphpT.setDim(!isFilter);
+        pad.invalidate();
+        glideT.setOn(s.legato); infT.setOn(s.infinite);
         masterFxT.setOn(masterFx);
         trValT.text((s.transpose > 0 ? "+" : "") + s.transpose);
         volS.set(s.volume);
@@ -289,6 +307,30 @@ public final class MainActivity extends Activity {
     };
 
     // ------------------------------------------------------------------ actions
+
+    private float autoSens = 0.5f;
+
+    /** Slicer: detect hits and place markers. Arpeggiator: toggle random order. */
+    private void contextAction() {
+        Slot s = engine.slots[sel];
+        if (s.mode == Slot.ARP) { s.arpRandom = !s.arpRandom; refresh(); return; }
+        if (s.mode != Slot.SLICER) return;
+        final int target = sel;
+        final float sens = autoSens;
+        autoSens = autoSens >= 0.8f ? 0.2f : autoSens + 0.3f;       // tap again for a different sensitivity
+        new Thread(() -> {
+            int n = engine.autoSlice(target, 32, sens);
+            ui.post(() -> toast(n == 0 ? "Nenhuma batida detectada" : n + " fatias detectadas (toque de novo p/ outra sensibilidade)"));
+        }, "gfdrps-slice").start();
+    }
+
+    private void toggleFilterType() {
+        if (fxSel != Fx.FILTER) { fxSel = Fx.FILTER; midi.selectedFx = fxSel; pad.select(sel, fxSel, masterFx); }
+        Fx.Filter f = (Fx.Filter) (masterFx ? engine.master[Fx.FILTER] : engine.slots[sel].fx[Fx.FILTER]);
+        f.highPass = !f.highPass;
+        toast(f.highPass ? "Filtro: passa-altas (HP)" : "Filtro: passa-baixas (LP)");
+        refresh();
+    }
 
     private void panic() {
         wave.releaseAll();
@@ -408,14 +450,17 @@ public final class MainActivity extends Activity {
 
     private void slotMenu(final int s) {
         final Slot sl = engine.slots[s];
-        String[] items = {"Carregar arquivo…", sl.muted ? "Reativar slot" : "Silenciar slot", "Duração do loop: dobrar (" + (int) sl.sampleBeats + " batidas)",
-                "Duração do loop: metade", "Recarregar som de demonstração"};
+        String[] items = {"Carregar arquivo…", sl.muted ? "Reativar slot" : "Silenciar slot",
+                "Modo gate (só toca segurando): " + (sl.gate ? "ligado" : "desligado"),
+                "Duração do loop: dobrar (" + (int) sl.sampleBeats + " batidas)", "Duração do loop: metade",
+                "Recarregar som de demonstração"};
         new AlertDialog.Builder(this).setTitle("Slot " + (s + 1) + (sl.sample != null ? " – " + sl.sample.name : "")).setItems(items, (d, w) -> {
             switch (w) {
                 case 0: pickFile(); break;
                 case 1: sl.muted = !sl.muted; break;
-                case 2: sl.sampleBeats = Math.min(256, sl.sampleBeats * 2); break;
-                case 3: sl.sampleBeats = Math.max(1, sl.sampleBeats / 2); break;
+                case 2: sl.gate = !sl.gate; break;
+                case 3: sl.sampleBeats = Math.min(256, sl.sampleBeats * 2); break;
+                case 4: sl.sampleBeats = Math.max(1, sl.sampleBeats / 2); break;
                 default: engine.loadSample(s, com.gfdrps.core.DemoSynth.make(s, engine.rate, engine.bpm)); break;
             }
             refresh();
@@ -423,14 +468,15 @@ public final class MainActivity extends Activity {
     }
 
     private void help() {
-        String t = "Slicer – toque numa fatia; altura = volume.\n"
-                + "Looper – dois dedos definem o loop.\n"
+        String t = "Slicer – toque numa fatia; altura = volume. Botão de marcador: editar fatias (toque = novo marcador, arraste = mover, toque no marcador = apagar, segurar o botão = voltar à grade). A estrela acha as batidas sozinha.\n"
+                + "Looper – dois dedos definem o loop; cruzar os dedos toca em reverse; 4/8/16/32 prende os marcadores na grade.\n"
                 + "Bow – segure: um grão do som vira textura contínua.\n"
                 + "Tape – arraste p/ direita acelera, p/ esquerda inverte; soltar = tape stop.\n"
                 + "Scratch – arraste o dedo como um vinil.\n"
                 + "Arpeggiator – segure dedos: dispara trechos no ritmo do BPM (dado = aleatório).\n"
                 + "Keyboard – teclas cromáticas (∞ sustenta, curva = legato).\n"
                 + "Loop Player – toque liga/desliga o loop sincronizado.\n\n"
+                + "◀| (esquerda) inverte o sample. Filtro: toque em LP/HP (ou no ícone do filtro de novo) para alternar passa-baixas/passa-altas.\n"
                 + "Sliders: volume · attack · release · pan.\n"
                 + "● grava seus gestos por N compassos e repete em loop.\n"
                 + "Rodapé: toque num slot para escolher, segure para o menu; mic grava no slot; círculos duplos gravam o mix (resample).";

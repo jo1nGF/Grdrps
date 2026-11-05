@@ -57,6 +57,20 @@ public final class Engine {
         post(() -> slots[slot].setSample(s, bpm));
     }
 
+    /** Sets manual slice markers (positions 0..1). Pass null/empty to go back to the even grid. */
+    public void setMarkers(int slot, float[] m) { slots[slot].markers = Slot.cleanMarkers(m); }
+
+    /** Detects hits in the slot's sample and uses them as slice markers. Returns how many were found. */
+    public int autoSlice(int slot, int max, float sensitivity) {
+        Sample s = slots[slot].sample;
+        if (s == null) return 0;
+        float[] m = Slicing.detect(s, max, sensitivity);
+        slots[slot].markers = m.length == 0 ? null : m;
+        return m.length;
+    }
+
+    public void reverseSample(int slot) { post(() -> slots[slot].reverseSample()); }
+
     public void setMode(int slot, int mode) { slots[slot].mode = mode; }
 
     public void armGestures(int slot, int bars) {

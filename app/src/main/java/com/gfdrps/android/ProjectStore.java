@@ -54,6 +54,9 @@ public final class ProjectStore {
             o.put("release", s.release); o.put("pan", s.pan); o.put("div", s.div);
             o.put("transpose", s.transpose); o.put("infinite", s.infinite); o.put("gate", s.gate);
             o.put("legato", s.legato); o.put("arpRandom", s.arpRandom); o.put("sampleBeats", s.sampleBeats);
+            o.put("reversed", s.reversed);
+            float[] mk = s.markers;
+            if (mk != null) { JSONArray ma = new JSONArray(); for (float v : mk) ma.put((double) v); o.put("markers", ma); }
             Sample sm = s.sample;
             if (sm != null) {
                 o.put("name", sm.name);
@@ -84,7 +87,7 @@ public final class ProjectStore {
             s.attack = (float) o.optDouble("attack", 0);
             s.release = (float) o.optDouble("release", 0.15);
             s.pan = (float) o.optDouble("pan", 0.5);
-            s.div = o.optInt("div", 8);
+            s.div = o.optInt("div", 0);
             s.transpose = o.optInt("transpose", 0);
             s.infinite = o.optBoolean("infinite", false);
             s.gate = o.optBoolean("gate", false);
@@ -96,7 +99,15 @@ public final class ProjectStore {
                 e.loadSample(i, sm);
                 final double sb = o.optDouble("sampleBeats", 8);
                 final int idx = i;
-                e.post(() -> e.slots[idx].sampleBeats = sb);   // runs after the sample is set
+                final boolean rev = o.optBoolean("reversed", false);
+                JSONArray ma = o.optJSONArray("markers");
+                final float[] mk = ma == null ? null : new float[ma.length()];
+                if (mk != null) for (int k = 0; k < mk.length; k++) mk[k] = (float) ma.getDouble(k);
+                e.post(() -> {                                 // runs after the sample is set
+                    e.slots[idx].sampleBeats = sb;
+                    e.slots[idx].reversed = rev;
+                    e.slots[idx].markers = Slot.cleanMarkers(mk);
+                });
             }
         }
     }
