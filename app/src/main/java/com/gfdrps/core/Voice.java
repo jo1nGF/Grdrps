@@ -21,7 +21,11 @@ final class Voice {
     double start, end;
     boolean loop;
     float vel = 1f, env = 0f;
-    float attInc = 1f, relInc = 0.001f;
+    // ADSR: stage 0 attack, 1 decay, 2 sustain, 3 release
+    int stage;
+    float attInc = 0.01f, decMul = 0.999f, sus = 1f, relStep = 0.001f;
+    float relFrames = 7200f;
+    float tapeMul = 0.9998f;
 
     // declick when jumping position
     private int dip;
@@ -41,15 +45,20 @@ final class Voice {
     double baseSpeed = 1.0;
     boolean decayOnRelease;
 
-    void setEnv(float attackSec, float releaseSec) {
-        attInc = 1f / Math.max(96f, attackSec * engineRate);      // never shorter than 2 ms
-        relInc = 1f / Math.max(240f, releaseSec * engineRate);    // never shorter than 5 ms
+    /** Sets the ADSR times (seconds) and sustain level (0..1). Safe to call while the voice is playing. */
+    void setEnv(float attackSec, float decaySec, float sustain, float releaseSec) {
+        attInc = 1f / Math.max(64f, attackSec * engineRate);                      // >= 1.3 ms
+        float df = Math.max(64f, decaySec * engineRate);
+        decMul = (float) Math.exp(-4.6 / df);                                     // ~99% of the way in decaySec
+        sus = sustain < 0f ? 0f : (sustain > 1f ? 1f : sustain);
+        relFrames = Math.max(96f, releaseSec * engineRate);                       // >= 2 ms
     }
 
     void trigger(int id, long frame) {
         active = true;
         held = true;
         releasing = false;
+        stage = 0;
         decayOnRelease = false;
         scratchAmp = 0f;
         tapeAmp = 0f;
@@ -76,11 +85,24 @@ final class Voice {
         else if (pos >= en || pos < st + xf) jumpTo(en - 1);
     }
 
+    /** Finger lifted. Tape: the tape winds down over ~2x the release time. Everything else: ADSR release. */
     void release() {
         held = false;
         glide = 0f;
-        if (kind == TAPE) { decayOnRelease = true; }
-        releasing = !decayOnRelease;
+        if (kind == TAPE) {
+            decayOnRelease = true;
+            tapeMul = (float) Math.exp(-4.6 / Math.max(0.35 * engineRate, relFrames * 2.0));
+            return;
+        }
+        beginRelease(relFrames);
+    }
+
+    /** Starts the release stage so the level reaches zero in `frames` samples from wherever it is now. */
+    private void beginRelease(double frames) {
+        if (releasing) return;
+        releasing = true;
+        stage = 3;
+        relStep = (float) (Math.max(env, 1e-4f) / Math.max(48.0, frames));
     }
 
     /** Fast fade-out, used when a voice is stolen. */
@@ -88,8 +110,10 @@ final class Voice {
         held = false;
         glide = 0f;
         decayOnRelease = false;
+        if (releasing) { relStep = Math.max(relStep, env / 240f); return; }
         releasing = true;
-        relInc = Math.max(relInc, 1f / 240f);
+        stage = 3;
+        relStep = Math.max(env, 1e-4f) / 240f;     // 5 ms
     }
 
     void kill() { active = false; releasing = false; held = false; }
@@ -121,12 +145,22 @@ final class Voice {
         final int len = sm.length();
         if (len < 2) { active = false; return; }
         for (int i = 0; i < n; i++) {
-            if (releasing) {
-                env -= relInc;
-                if (env <= 0f) { active = false; return; }
-            } else if (env < 1f) {
-                env += attInc;
-                if (env > 1f) env = 1f;
+            switch (stage) {
+                case 0:
+                    env += attInc;
+                    if (env >= 1f) { env = 1f; stage = 1; }
+                    break;
+                case 1:
+                    env = sus + (env - sus) * decMul;
+                    if (Math.abs(env - sus) < 1e-4f) { env = sus; stage = 2; }
+                    break;
+                case 3:
+                    env -= relStep;
+                    if (env <= 0f) { active = false; return; }
+                    break;
+                default:
+                    env += (sus - env) * 0.002f;      // moving the sustain slider glides, no steps
+                    break;
             }
             if (glide > 0f) speed += (speedTgt - speed) * glide;
             if (dip == 1) {
@@ -150,6 +184,12 @@ final class Voice {
     private float playSample() {
         float s = loop ? readLoop(pos) : sm.at(pos);
         double inc = speed * ratio;
+        if (!loop && !releasing && inc != 0) {
+            double ai = Math.abs(inc);
+            double rem = (inc > 0 ? end - pos : pos - start) / ai;           // frames left in the region
+            double fade = Math.min(relFrames, Math.max(96.0, 0.5 * (end - start) / ai));
+            if (rem <= fade) beginRelease(Math.max(48.0, rem));
+        }
         pos += inc;
         if (dip != 0) return s;                    // a declick jump is already in progress
         double step = Math.abs(inc) * 2 + 2;       // a normal wrap overshoots by less than this
@@ -173,10 +213,7 @@ final class Voice {
     }
 
     private void startRelease() {
-        if (!releasing) {
-            releasing = true;
-            relInc = Math.max(relInc, 1f / 240f);
-        }
+        beginRelease(96.0);       // safety net: region ended before the timed fade finished
     }
 
     /** Granular "bow": two overlapping Hann grains. Grain size can change while playing without any jump. */
@@ -201,7 +238,7 @@ final class Voice {
 
     private float tapeSample(int len) {
         if (!held) {
-            speed *= 0.99985; // tape stop: exponential slow-down
+            speed *= tapeMul; // tape stop: exponential slow-down, length follows the release time
             if (Math.abs(speed) < 0.01) { active = false; return 0f; }
         }
         float s = sm.at(pos);

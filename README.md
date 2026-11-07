@@ -23,10 +23,10 @@ Para compilar localmente: `./gradlew assembleDebug` (precisa do Android SDK e JD
 | **Bow** | Grão do som em loop sob o dedo (textura/pad); altura muda o tamanho do grão |
 | **Tape** | Arraste para direita acelera, esquerda inverte; soltar = tape stop |
 | **Scratch** | O dedo arrasta o playhead (largura da tela = 0,25–2 s de áudio conforme a altura); movimento suave, dedo parado = silêncio |
-| **Arpeggiator** | Dispara trechos nas subdivisões do BPM; vários dedos = sequência; 🎲 = aleatório |
+| **Arpeggiator** | Toque várias fatias: o padrão toca nas fatias sob os dedos, travado no BPM. Direção UP/DN/U-D/RND/ORD (botão rosa), taxa 1/4–1/32 (botão amarelo), usa o ADSR do slot |
 | **Keyboard** | 24 teclas cromáticas; ∞ sustenta; curva = legato (glide) |
 | **Loop Player** | Loop travado no BPM do projeto; toque liga/desliga (ou gate) |
-| Efeitos XY | Distortion, **Filter LP/HP** (botão LP/HP ou toque de novo no ícone; a curva real aparece no pad), Amp Mod, Feedback Delay sincronizado, **Reverb de rede de atrasos (FDN) estéreo** com decay de 0,4 a 8 s (x) e wet (y) que some por completo ao soltar; "M" aplica no master; "hold" trava o efeito ligado. Entrada e saída dos efeitos são suavizadas (sem estalos) |
+| Efeitos XY | Distortion, **Filter LP/HP** (toque de novo no ícone do filtro alterna LP/HP e o ícone muda; a curva real aparece no pad), Amp Mod, Feedback Delay sincronizado, **Reverb "cloud" (plate de Dattorro)**, cauda longa e sem metálico, decay de 0,6 a 14 s (x) e wet (y) que some por completo ao soltar; "M" aplica no master; "hold" trava o efeito ligado. Entrada e saída dos efeitos são suavizadas (sem estalos) |
 | Gravador de gestos | ● grava seus dedos por 1–128 compassos a partir do próximo compasso e repete em loop; troque o modo durante o loop para mudar como ele soa |
 | Resample | Botão de círculos duplos grava o mix final num slot; microfone grava no slot |
 | Importar | WAV, AIFF (direto) e MP3/M4A/OGG/FLAC (decodificador do Android) |
@@ -37,7 +37,7 @@ Para compilar localmente: `./gradlew assembleDebug` (precisa do Android SDK e JD
 
 - **Gf**: menu (projetos, MIDI). **Metrônomo**, **BPM** (arraste para cima/baixo, ou toque no ritmo), volume master, **■** corta todas as vozes, **?** ajuda.
 - Linha de modos: os 8 ícones. **Pasta** carrega arquivo no slot; **◀|** inverte o sample (toque de novo restaura). O modo gate fica no menu do slot (segure o slot).
-- Sliders: volume · attack · release · pan.
+- Sliders: volume · attack · decay · sustain · release · pan.
 - Botões `0 4 8 16 32`: fatias do Slicer / passos por compasso do Arpeggiator / grade dos marcadores do Looper (0 = livre). Ao lado: estrela (auto-fatiar, no Slicer) ou dado (aleatório, no Arp) e o botão de editar fatias. `-12 -1 0 +1 +12`: transposição.
 - Linha de gestos: ● grava, número = compassos (toque para mudar), ✕ apaga, ∞ sustenta.
 - Rodapé: ▶/■ transporte, os 6 slots (toque seleciona, **segure** para o menu), microfone, mix.

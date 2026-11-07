@@ -18,7 +18,7 @@ public final class Engine {
     public volatile double beat;   // current beat position (UI display)
 
     private long frame;
-    private double beatAcc;
+    private double beatAcc, freeBeat;
     private double clickPhase; private int clickLeft;
     private double lastBeatInt = -1;
 
@@ -67,6 +67,17 @@ public final class Engine {
         float[] m = Slicing.detect(s, max, sensitivity);
         slots[slot].markers = m.length == 0 ? null : m;
         return m.length;
+    }
+
+    /**
+     * Real stop: pauses the transport (loop players, recorded gestures), fades out every voice of every
+     * slot and clears held fingers. Playing again with the transport button resumes loops and gestures.
+     */
+    public void stopAll() {
+        post(() -> {
+            playing = false;
+            for (Slot s : slots) s.fadeAll();
+        });
     }
 
     public void reverseSample(int slot) { post(() -> slots[slot].reverseSample()); }
@@ -170,7 +181,8 @@ public final class Engine {
         java.util.Arrays.fill(mixL, 0, n, 0f);
         java.util.Arrays.fill(mixR, 0, n, 0f);
         boolean anySolo = false;
-        for (int i = 0; i < SLOTS; i++) slots[i].render(mixL, mixR, n, frame, b, playing);
+        final double gridBeat = playing ? beatNow : freeBeat;     // arp keeps running while the transport is stopped
+        for (int i = 0; i < SLOTS; i++) slots[i].render(mixL, mixR, n, frame, b, playing, gridBeat);
         for (int i = 0; i < Fx.COUNT; i++) master[i].process(mixL, mixR, n, b);
         float mv = masterVolume;
         float pl = 0f, pr = 0f;
@@ -188,6 +200,7 @@ public final class Engine {
             append(recTmp, 0, n);
         }
         frame += n;
+        freeBeat += n * b / (60.0 * rate);
         if (playing) beatAcc += n * b / (60.0 * rate);
         beat = beatAcc;
     }

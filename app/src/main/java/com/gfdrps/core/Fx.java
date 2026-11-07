@@ -166,60 +166,96 @@ public final class Fx {
     }
 
     /**
-     * Hall/plate reverb: 4 input diffusers into an 8-line feedback delay network with a Householder
-     * matrix, slowly modulated delay lines (no metallic ringing), frequency-dependent damping and a
-     * decorrelated stereo output. x = decay time (0.4 s .. 8 s), y = wet level.
-     * Only listens while the pad is active; when released the tail is shortened and fades to
-     * absolute silence (no CPU use, no residual reverb).
+     * "Cloud" reverb: a Dattorro-style plate. The input goes through a pre-delay and four dense
+     * diffusers into a figure-eight tank of two cross-coupled branches, each with a slowly
+     * modulated all-pass, a darkening low-pass and a second diffuser. The modulation and the
+     * all-pass diffusion keep the tail smooth and free of ringing/pitched resonances, and the
+     * output is taken from 14 taps spread over both branches for a wide, decorrelated stereo image.
+     *
+     * x = decay time (0.6 s .. 14 s), y = wet level. It only listens while the pad is active; after
+     * release the tail rings out naturally (at most ~2.5 s) and then goes completely silent.
      */
     public static final class Reverb extends Effect {
-        private static final int N = 8;
-        private static final int[] BASE = {1087, 1283, 1429, 1597, 1783, 1993, 2237, 2459};   // at 48 kHz
-        private static final int[] DIFF = {142, 107, 379, 277};
-        private static final float[] SL = {1, 1, -1, -1, 1, 1, -1, -1};
-        private static final float[] SR = {1, -1, 1, -1, -1, 1, -1, 1};
+        // all lengths in samples at 29761 Hz (Dattorro's reference rate), scaled to the engine rate
+        private static final double REF = 29761.0;
+        private static final int[] IN_AP = {142, 107, 379, 277};
+        private static final float[] IN_G = {0.75f, 0.75f, 0.625f, 0.625f};
 
-        private final float[][] line = new float[N][];
-        private final int[] len = new int[N];
-        private final int[] wp = new int[N];
-        private final float[] lp = new float[N], gain = new float[N];
-        private final double[] lfoPh = new double[N], lfoInc = new double[N];
-        private final float[][] dif = new float[4][];
-        private final int[] difW = new int[4];
-        private final int[] difLen = new int[4];
-        private final float[] pre;
-        private int preW, preLen;
+        private static final class Line {
+            final float[] b; int w;
+            Line(int len) { b = new float[Math.max(4, len)]; }
+            /** Oldest sample: the output of a delay of b.length samples. Call push() right after. */
+            float oldest() { return b[w]; }
+            void push(float v) { b[w] = v; if (++w >= b.length) w = 0; }
+            /** Sample written `t` samples ago (0 = most recent). */
+            float tap(int t) {
+                int i = w - 1 - Math.min(t, b.length - 1);
+                if (i < 0) i += b.length;
+                return b[i];
+            }
+            void clear() { java.util.Arrays.fill(b, 0f); w = 0; }
+        }
+
+        private final Line[] inAp = new Line[4];
+        private final Line pre;
+        private final Line apL, apR;          // modulated decay diffusers
+        private final Line d1L, d1R;          // first delays
+        private final Line ap2L, ap2R;        // second diffusers
+        private final Line d2L, d2R;          // second delays
+        private final int[] tapL = new int[7], tapR = new int[7];
         private final float modDepth;
-        private float rt60 = 1.5f, wet = 0f;
+        private final int apLBase, apRBase;
+        private double lfoL, lfoR, lfo2L, lfo2R;
+        private final double lfoIncL, lfoIncR, lfo2IncL, lfo2IncR;
+        private final int ap2LBase, ap2RBase;
+        private final float mod2Depth;
+        private float lpIn, lpL, lpR, dcIn;
+        private float rt60 = 2f, wet = 0f, decay = 0.5f;
         private boolean clean = true;
-        private float dcIn, dcOutL, dcOutR;
+        private final float loopSeconds;
+
+        private static int sc(int v, double k) { return Math.max(2, (int) Math.round(v * k)); }
 
         public Reverb(int rate) {
             super(rate);
-            float k = rate / 48000f;
-            modDepth = Math.max(2f, 9f * k);
-            for (int i = 0; i < N; i++) {
-                len[i] = Math.max(16, (int) (BASE[i] * k));
-                line[i] = new float[len[i] + (int) modDepth + 8];
-                lfoInc[i] = 2 * Math.PI * (0.11 + 0.037 * i) / rate;
-                lfoPh[i] = i * 0.9;
-            }
-            for (int i = 0; i < 4; i++) {
-                difLen[i] = Math.max(8, (int) (DIFF[i] * k));
-                dif[i] = new float[difLen[i]];
-            }
-            preLen = Math.max(8, (int) (0.012 * rate));
-            pre = new float[preLen];
+            double k = rate / REF;
+            for (int i = 0; i < 4; i++) inAp[i] = new Line(sc(IN_AP[i], k));
+            pre = new Line(Math.max(8, (int) (0.022 * rate)));
+            modDepth = (float) (14 * k);
+            apLBase = sc(672, k); apRBase = sc(908, k);
+            apL = new Line(apLBase + (int) modDepth + 4);
+            apR = new Line(apRBase + (int) modDepth + 4);
+            d1L = new Line(sc(4453, k)); d1R = new Line(sc(4217, k));
+            mod2Depth = (float) (10 * k);
+            ap2LBase = sc(1800, k); ap2RBase = sc(2656, k);
+            ap2L = new Line(ap2LBase + (int) mod2Depth + 4); ap2R = new Line(ap2RBase + (int) mod2Depth + 4);
+            d2L = new Line(sc(3720, k)); d2R = new Line(sc(3163, k));
+            // output taps (Dattorro): read inside the opposite/own branch
+            int[] tl = {266, 2974, 1913, 1996, 1990, 187, 1066};
+            int[] tr = {353, 3627, 1228, 2673, 2111, 335, 121};
+            for (int i = 0; i < 7; i++) { tapL[i] = sc(tl[i], k); tapR[i] = sc(tr[i], k); }
+            lfoIncL = 2 * Math.PI * 0.43 / rate;
+            lfoIncR = 2 * Math.PI * 0.61 / rate;
+            lfo2IncL = 2 * Math.PI * 0.29 / rate;
+            lfo2IncR = 2 * Math.PI * 0.37 / rate;
+            lfoR = 1.9; lfo2L = 0.7; lfo2R = 3.4;
+            loopSeconds = (float) ((672 + 4453 + 1800 + 3720 + 908 + 4217 + 2656 + 3163) / REF);
         }
 
-        @Override protected void reset() {}
-
         private void clear() {
-            for (int i = 0; i < N; i++) { java.util.Arrays.fill(line[i], 0f); lp[i] = 0f; }
-            for (int i = 0; i < 4; i++) java.util.Arrays.fill(dif[i], 0f);
-            java.util.Arrays.fill(pre, 0f);
-            wet = 0f; dcIn = dcOutL = dcOutR = 0f;
+            for (Line l : inAp) l.clear();
+            pre.clear(); apL.clear(); apR.clear(); d1L.clear(); d1R.clear();
+            ap2L.clear(); ap2R.clear(); d2L.clear(); d2R.clear();
+            lpIn = lpL = lpR = dcIn = 0f; wet = 0f;
             clean = true;
+        }
+
+        private static float frac(Line l, float d) {
+            // fractional read, d samples behind the newest sample
+            int i0 = (int) d;
+            float f = d - i0;
+            float a = l.tap(i0), b = l.tap(i0 + 1);
+            return a + (b - a) * f;
         }
 
         @Override public void process(float[] l, float[] r, int n, double bpm) {
@@ -228,66 +264,78 @@ public final class Fx {
                 return;
             }
             clean = false;
-            final float rtT = active ? 0.4f * (float) Math.pow(20.0, x) : 0.35f;
-            rt60 += (rtT - rt60) * (active ? 0.05f : 0.25f);
-            final float wetT = active ? (float) (1.1 * Math.pow(y, 1.4)) : 0f;
-            // per-line feedback gain for the requested RT60 (-60 dB after rt60 seconds)
-            for (int i = 0; i < N; i++) gain[i] = (float) Math.pow(10.0, -3.0 * len[i] / (rate * (double) rt60));
-            // darker tail for long decays
-            final float damp = 0.62f - 0.22f * (rt60 / 8f);
-            final float inGain = 0.35f;
-            final float mod = modDepth;
-            for (int i = 0; i < n; i++) {
-                if (active) wet += (wetT - wet) * 0.002f;
-                else wet *= 0.99985f;
-                // input: mono, high-passed a little, pre-delay, diffusion
-                float in = active ? (l[i] + r[i]) * 0.5f : 0f;
-                float hp = in - dcIn; dcIn += 0.002f * hp; in = hp;
-                float pd = pre[preW]; pre[preW] = in; if (++preW >= preLen) preW = 0;
-                float s = pd;
-                for (int a = 0; a < 4; a++) {
-                    float[] b = dif[a];
-                    float o = b[difW[a]];
-                    float v = s - 0.6f * o;
-                    b[difW[a]] = v;
-                    s = o + 0.6f * v;
-                    if (++difW[a] >= difLen[a]) difW[a] = 0;
-                }
-                // read the 8 delay lines with modulated fractional delay
-                float sum = 0f, oL = 0f, oR = 0f;
-                final float[] y8 = tmp;
-                for (int c = 0; c < N; c++) {
-                    lfoPh[c] += lfoInc[c];
-                    if (lfoPh[c] > 6.283185307179586) lfoPh[c] -= 6.283185307179586;
-                    float d = len[c] + mod * (float) Math.sin(lfoPh[c]);
-                    float rp = wp[c] - d;
-                    float[] b = line[c];
-                    if (rp < 0) rp += b.length;
-                    int i0 = (int) rp;
-                    int i1 = i0 + 1 >= b.length ? 0 : i0 + 1;
-                    float fr = rp - i0;
-                    float o = b[i0] + (b[i1] - b[i0]) * fr;
-                    lp[c] += damp * (o - lp[c]);
-                    float g = lp[c] * gain[c];
-                    y8[c] = g;
-                    sum += g;
-                    oL += SL[c] * o;
-                    oR += SR[c] * o;
-                }
-                float h = sum * (2f / N);
-                for (int c = 0; c < N; c++) {
-                    float[] b = line[c];
-                    float inj = (c & 1) == 0 ? s : -s;
-                    b[wp[c]] = y8[c] - h + inj * inGain;
-                    if (++wp[c] >= b.length) wp[c] = 0;
-                }
-                float outL = oL * 0.7f, outR = oR * 0.7f;
-                l[i] += outL * wet;
-                r[i] += outR * wet;
+            if (active) {
+                float rtT = 0.6f * (float) Math.pow(24.0, x);
+                rt60 += (rtT - rt60) * 0.05f;
             }
-            for (int c = 0; c < N; c++) if (!(lp[c] == lp[c]) || Math.abs(lp[c]) > 1e4f) { clear(); break; }
-        }
+            // calibrated so the measured RT60 matches the requested one
+            decay = (float) Math.min(0.985, Math.pow(10.0, -3.0 * loopSeconds / (4.0 * Math.max(0.2, rt60))));
+            final float dd2 = Math.max(0.25f, Math.min(0.5f, decay + 0.15f));
+            final float wetT = active ? (float) (1.25 * Math.pow(y, 1.3)) : 0f;
+            final float tail = Math.min(2.5f, Math.max(0.5f, rt60));
+            final float wetFall = (float) Math.exp(-9.2 / (tail * rate));      // -80 dB over `tail` seconds
+            final float damp = 0.5f;                                           // dark, soft tail
+            final float bw = 0.8f;
+            final float gMod = 0.7f;
+            for (int i = 0; i < n; i++) {
+                if (active) wet += (wetT - wet) * 0.002f; else wet *= wetFall;
 
-        private final float[] tmp = new float[N];
+                float in = active ? (l[i] + r[i]) * 0.5f : 0f;
+                float hp = in - dcIn; dcIn += 0.003f * hp; in = hp;
+                float pd = pre.oldest(); pre.push(in);
+                lpIn += bw * (pd - lpIn);
+                float s = lpIn;
+                for (int a = 0; a < 4; a++) {
+                    Line ln = inAp[a];
+                    float d = ln.oldest();
+                    float v = s - IN_G[a] * d;
+                    ln.push(v);
+                    s = IN_G[a] * v + d;
+                }
+
+                float feedL = d2R.oldest() * decay;      // each branch feeds the other
+                float feedR = d2L.oldest() * decay;
+
+                // ---- left branch
+                lfoL += lfoIncL; if (lfoL > 6.283185307179586) lfoL -= 6.283185307179586;
+                float dm = apLBase + modDepth * (float) Math.sin(lfoL);
+                float d = frac(apL, dm);
+                float v = (s + feedL) - gMod * d;
+                apL.push(v);
+                float y1 = gMod * v + d;
+                float o1 = d1L.oldest(); d1L.push(y1);
+                lpL += damp * (o1 - lpL);
+                float z = lpL * decay;
+                lfo2L += lfo2IncL; if (lfo2L > 6.283185307179586) lfo2L -= 6.283185307179586;
+                float o2 = frac(ap2L, ap2LBase + mod2Depth * (float) Math.sin(lfo2L));
+                float v2 = z - dd2 * o2;
+                ap2L.push(v2);
+                d2L.push(dd2 * v2 + o2);
+
+                // ---- right branch
+                lfoR += lfoIncR; if (lfoR > 6.283185307179586) lfoR -= 6.283185307179586;
+                dm = apRBase + modDepth * (float) Math.sin(lfoR);
+                d = frac(apR, dm);
+                v = (s + feedR) - gMod * d;
+                apR.push(v);
+                y1 = gMod * v + d;
+                o1 = d1R.oldest(); d1R.push(y1);
+                lpR += damp * (o1 - lpR);
+                z = lpR * decay;
+                lfo2R += lfo2IncR; if (lfo2R > 6.283185307179586) lfo2R -= 6.283185307179586;
+                o2 = frac(ap2R, ap2RBase + mod2Depth * (float) Math.sin(lfo2R));
+                v2 = z - dd2 * o2;
+                ap2R.push(v2);
+                d2R.push(dd2 * v2 + o2);
+
+                float outL = d1R.tap(tapL[0]) + d1R.tap(tapL[1]) - ap2R.tap(tapL[2]) + d2R.tap(tapL[3])
+                        - d1L.tap(tapL[4]) - ap2L.tap(tapL[5]) - d2L.tap(tapL[6]);
+                float outR = d1L.tap(tapR[0]) + d1L.tap(tapR[1]) - ap2L.tap(tapR[2]) + d2L.tap(tapR[3])
+                        - d1R.tap(tapR[4]) - ap2R.tap(tapR[5]) - d2R.tap(tapR[6]);
+                l[i] += outL * wet * 0.6f;
+                r[i] += outR * wet * 0.6f;
+            }
+            if (!(lpL == lpL) || !(lpR == lpR) || Math.abs(lpL) > 1e4f || Math.abs(lpR) > 1e4f) clear();
+        }
     }
 }

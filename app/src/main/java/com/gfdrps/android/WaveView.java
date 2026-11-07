@@ -166,7 +166,6 @@ public final class WaveView extends View {
         Sample sm = s.sample;
 
         if (mode == Slot.KEYBOARD) drawKeys(c, w, h);
-        if (mode == Slot.ARP) drawGrid(c, w, h, s.div <= 0 ? 8 : s.div, 0x22FFFFFF);
 
         // waveform
         if (sm != null) {
@@ -193,6 +192,17 @@ public final class WaveView extends View {
         }
 
         if (mode == Slot.SLICER) drawSlices(c, w, h, s);
+        if (mode == Slot.ARP) {
+            drawSlices(c, w, h, s);
+            if (s.arpFlash > 0.02f && s.arpSlice >= 0) {
+                float[] b = s.sliceBoundaries();
+                int i = s.arpSlice;
+                float x0 = (i == 0 ? 0f : b[i - 1]) * w, x1 = (i >= b.length ? 1f : b[i]) * w;
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(((int) (s.arpFlash * 110) << 24) | 0xFF4FA3);
+                c.drawRect(x0, 0, x1, h, p);
+            }
+        }
 
         // per-mode touch overlays
         p.setStyle(Paint.Style.STROKE);

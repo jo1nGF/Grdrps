@@ -25,7 +25,7 @@ public final class Theme {
     public static final int I_SLICER = 0, I_LOOPER = 1, I_BOW = 2, I_TAPE = 3, I_SCRATCH = 4, I_ARP = 5, I_KEYS = 6,
             I_LOOPPLAY = 7, I_DIST = 8, I_FILTER = 9, I_AMP = 10, I_DELAY = 11, I_REVERB = 12, I_FILE = 13,
             I_STOP = 14, I_PLAY = 15, I_REC = 16, I_METRO = 17, I_HELP = 18, I_GATE = 19, I_GLIDE = 20, I_DICE = 21,
-            I_LOOPINF = 22, I_CLEAR = 23, I_MIX = 24, I_MIC = 25, I_REVERSE = 26, I_MARK = 27, I_AUTO = 28;
+            I_LOOPINF = 22, I_CLEAR = 23, I_MIX = 24, I_MIC = 25, I_REVERSE = 26, I_MARK = 27, I_AUTO = 28, I_FILTER_HP = 29;
 
     private static final Path P = new Path();
     private static final RectF R = new RectF();
@@ -184,6 +184,12 @@ public final class Theme {
                 R.set(cx - r * 0.6f, cy - r * 0.4f, cx + r * 0.6f, cy + r * 0.6f);
                 c.drawArc(R, 0, 180, false, p);
                 c.drawLine(cx, cy + r * 0.6f, cx, cy + r * 0.95f, p);
+                break;
+            case I_FILTER_HP:
+                P.moveTo(cx + r, cy - r * 0.3f); P.lineTo(cx + r * 0.1f, cy - r * 0.3f);
+                P.quadTo(cx - r * 0.2f, cy - r * 0.9f, cx - r * 0.3f, cy - r * 0.2f);
+                P.lineTo(cx - r, cy + r * 0.8f);
+                c.drawPath(P, p);
                 break;
             case I_REVERSE:
                 c.drawLine(cx + r, cy, cx - r * 0.9f, cy, p);

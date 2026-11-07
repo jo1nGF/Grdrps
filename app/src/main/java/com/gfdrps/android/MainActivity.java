@@ -46,8 +46,8 @@ public final class MainActivity extends Activity {
     private final Widgets.Tile[] divTiles = new Widgets.Tile[Slot.DIVS.length];
     private final Widgets.Tile[] fxTiles = new Widgets.Tile[Fx.COUNT];
     private final SlotStrip[] strips = new SlotStrip[Engine.SLOTS];
-    private Widgets.Tile revT, ctxT, edT, lphpT, glideT, infT, recGestT, barsT, metroT, playT, micT, mixT, trValT, masterFxT, latchT;
-    private Widgets.Slider volS, attS, relS, panS, masterS;
+    private Widgets.Tile revT, ctxT, edT, glideT, infT, recGestT, barsT, metroT, playT, micT, mixT, trValT, masterFxT, latchT;
+    private Widgets.Slider volS, attS, decS, susS, relS, panS, masterS;
     private BpmView bpmView;
     private int pendingMicMode = Engine.REC_OFF;
 
@@ -124,7 +124,7 @@ public final class MainActivity extends Activity {
 
         // row 1: menu, metronome, bpm, master volume, stop, help
         LinearLayout r1 = row();
-        r1.addView(tile().text("Gf").accent(0xFFFFFFFF).onClick(this::mainMenu), lp(1f));
+        r1.addView(tile().text("Gf v" + versionName()).textScale(0.6f).accent(0xFFFFFFFF).onClick(this::mainMenu), lp(1.3f));
         metroT = tile().icon(Theme.I_METRO).accent(0xFF2FE0C8).onClick(() -> { engine.metronome = !engine.metronome; metroT.setOn(engine.metronome); });
         r1.addView(metroT, lp(0.9f));
         bpmView = new BpmView(this, engine);
@@ -153,9 +153,11 @@ public final class MainActivity extends Activity {
         LinearLayout r3 = row();
         volS = new Widgets.Slider(this, true).accent(0xFFE9EDF2).onValue(v -> engine.slots[sel].volume = v);
         attS = new Widgets.Slider(this, true).accent(0xFFFF9A2E).onValue(v -> engine.slots[sel].attack = v * v * 2f);
+        decS = new Widgets.Slider(this, true).accent(0xFFFFD23F).onValue(v -> engine.slots[sel].decay = 0.02f + v * v * 3f);
+        susS = new Widgets.Slider(this, true).accent(0xFF7CFF6B).onValue(v -> engine.slots[sel].sustain = v);
         relS = new Widgets.Slider(this, true).accent(0xFF3DD6FF).onValue(v -> engine.slots[sel].release = 0.01f + v * v * 3f);
         panS = new Widgets.Slider(this, true).accent(0xFFB46CFF).onValue(v -> engine.slots[sel].pan = v);
-        r3.addView(volS, lp(0.7f)); r3.addView(attS, lp(0.7f)); r3.addView(relS, lp(0.7f)); r3.addView(panS, lp(0.7f));
+        r3.addView(volS, lp(0.7f)); r3.addView(attS, lp(0.7f)); r3.addView(decS, lp(0.7f)); r3.addView(susS, lp(0.7f)); r3.addView(relS, lp(0.7f)); r3.addView(panS, lp(0.7f));
 
         LinearLayout mid = col();
         // div row
@@ -167,7 +169,11 @@ public final class MainActivity extends Activity {
         }
         ctxT = tile().icon(Theme.I_DICE).accent(0xFFFF4FA3).onClick(this::contextAction);   // Slicer: auto-slice · Arp: random
         dr.addView(ctxT, lp(1f));
-        edT = tile().icon(Theme.I_MARK).accent(0xFFFFD23F).onClick(() -> { wave.setEditSlices(!wave.isEditSlices()); refresh(); })
+        edT = tile().icon(Theme.I_MARK).accent(0xFFFFD23F).onClick(() -> {
+                    Slot sl = engine.slots[sel];
+                    if (sl.mode == Slot.ARP) { int i = 0; while (i < 3 && ARP_RATES[i] != sl.arpRate) i++; sl.arpRate = ARP_RATES[(i + 1) % 4]; }
+                    else wave.setEditSlices(!wave.isEditSlices());
+                    refresh(); })
                 .onLong(() -> { engine.setMarkers(sel, null); toast("Fatias voltaram para a grade"); });
         dr.addView(edT, lp(1f));
         mid.addView(dr, lpv(1f));
@@ -208,8 +214,6 @@ public final class MainActivity extends Activity {
             });
             fxCol.addView(fxTiles[f], lpv(1f));
         }
-        lphpT = tile().text("LP").textScale(0.38f).accent(0xFF3DD6FF).onClick(this::toggleFilterType);
-        fxCol.addView(lphpT, lpv(0.8f));
         latchT = tile().text("hold").textScale(0.3f).accent(0xFFFFFFFF).onClick(() -> { pad.setLatch(!pad.isLatch()); latchT.setOn(pad.isLatch()); });
         fxCol.addView(latchT, lpv(0.8f));
         masterFxT = tile().text("M").accent(0xFFFFD23F).onClick(() -> { masterFx = !masterFx; pad.select(sel, fxSel, masterFx); refresh(); });
@@ -224,7 +228,10 @@ public final class MainActivity extends Activity {
 
         // ---- bottom strip
         LinearLayout strip = row();
-        playT = tile().icon(Theme.I_PLAY).accent(0xFFE9EDF2).onClick(() -> { engine.playing = !engine.playing; refresh(); });
+        playT = tile().icon(Theme.I_PLAY).accent(0xFFE9EDF2).onClick(() -> {
+            if (engine.playing) { wave.releaseAll(); engine.stopAll(); } else engine.playing = true;
+            ui.postDelayed(this::refresh, 100);
+        });
         strip.addView(playT, lp(1.2f));
         for (int i = 0; i < Engine.SLOTS; i++) {
             strips[i] = new SlotStrip(this, engine, i, new SlotStrip.Callbacks() {
@@ -264,19 +271,22 @@ public final class MainActivity extends Activity {
         for (int f = 0; f < Fx.COUNT; f++) fxTiles[f].setOn(fxSel == f);
         revT.setOn(s.reversed);
         if (s.mode == Slot.SLICER) { ctxT.icon(Theme.I_AUTO).accent(Theme.MODE[0]); ctxT.setOn(false); ctxT.setDim(false); }
-        else if (s.mode == Slot.ARP) { ctxT.icon(Theme.I_DICE).accent(0xFFFF4FA3); ctxT.setOn(s.arpRandom); ctxT.setDim(false); }
+        else if (s.mode == Slot.ARP) { ctxT.text(ARP_DIR[s.arpDir]).accent(0xFFFF4FA3); ctxT.setOn(true); ctxT.setDim(false); }
         else { ctxT.icon(Theme.I_DICE); ctxT.setOn(false); ctxT.setDim(true); }
         if (s.mode != Slot.SLICER && wave.isEditSlices()) wave.setEditSlices(false);
-        edT.setOn(wave.isEditSlices()); edT.setDim(s.mode != Slot.SLICER);
-        boolean isFilter = fxSel == Fx.FILTER;
-        boolean hp = isFilter && ((Fx.Filter) (masterFx ? engine.master[fxSel] : s.fx[fxSel])).highPass;
-        lphpT.text(hp ? "HP" : "LP"); lphpT.setOn(isFilter); lphpT.setDim(!isFilter);
+        if (s.mode == Slot.ARP) { edT.text("1/" + s.arpRate).accent(0xFFFFD23F); edT.setOn(true); edT.setDim(false); }
+        else { edT.icon(Theme.I_MARK).accent(0xFFFFD23F); edT.setOn(wave.isEditSlices()); edT.setDim(s.mode != Slot.SLICER); }
+        // one single Filter module: its icon shows whether it is low-pass or high-pass
+        Fx.Filter flt = (Fx.Filter) (masterFx ? engine.master[Fx.FILTER] : s.fx[Fx.FILTER]);
+        fxTiles[Fx.FILTER].icon(flt.highPass ? Theme.I_FILTER_HP : Theme.I_FILTER);
         pad.invalidate();
         glideT.setOn(s.legato); infT.setOn(s.infinite);
         masterFxT.setOn(masterFx);
         trValT.text((s.transpose > 0 ? "+" : "") + s.transpose);
         volS.set(s.volume);
         attS.set((float) Math.sqrt(s.attack / 2f));
+        decS.set((float) Math.sqrt(Math.max(0f, (s.decay - 0.02f) / 3f)));
+        susS.set(s.sustain);
         relS.set((float) Math.sqrt(Math.max(0f, (s.release - 0.01f) / 3f)));
         panS.set(s.pan);
         metroT.setOn(engine.metronome);
@@ -298,6 +308,8 @@ public final class MainActivity extends Activity {
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             updateGestureTiles();
+            playT.icon(engine.playing ? Theme.I_STOP : Theme.I_PLAY);
+            playT.setOn(engine.playing);
             bpmView.invalidate();
             int rm = engine.recordingMode();
             micT.setOn(rm == Engine.REC_INPUT);
@@ -308,12 +320,14 @@ public final class MainActivity extends Activity {
 
     // ------------------------------------------------------------------ actions
 
+    private static final String[] ARP_DIR = {"UP", "DN", "U-D", "RND", "ORD"};
+    private static final int[] ARP_RATES = {4, 8, 16, 32};
     private float autoSens = 0.5f;
 
     /** Slicer: detect hits and place markers. Arpeggiator: toggle random order. */
     private void contextAction() {
         Slot s = engine.slots[sel];
-        if (s.mode == Slot.ARP) { s.arpRandom = !s.arpRandom; refresh(); return; }
+        if (s.mode == Slot.ARP) { s.arpRandom = false; s.arpDir = (s.arpDir + 1) % 5; refresh(); return; }
         if (s.mode != Slot.SLICER) return;
         final int target = sel;
         final float sens = autoSens;
@@ -334,7 +348,8 @@ public final class MainActivity extends Activity {
 
     private void panic() {
         wave.releaseAll();
-        engine.post(() -> { for (Slot s : engine.slots) s.stopAll(); });
+        engine.stopAll();
+        ui.postDelayed(this::refresh, 100);
     }
 
     private void toggleGestures() {
@@ -473,18 +488,27 @@ public final class MainActivity extends Activity {
                 + "Bow – segure: um grão do som vira textura contínua.\n"
                 + "Tape – arraste p/ direita acelera, p/ esquerda inverte; soltar = tape stop.\n"
                 + "Scratch – arraste o dedo como um vinil.\n"
-                + "Arpeggiator – segure dedos: dispara trechos no ritmo do BPM (dado = aleatório).\n"
+                + "Arpeggiator – segure dedos: dispara as fatias sob os dedos no ritmo do BPM; botão rosa = direção (UP, DN, U-D, RND, ORD), botão amarelo = taxa (1/4–1/32); 0/4/8/16/32 = nº de fatias.\n"
                 + "Keyboard – teclas cromáticas (∞ sustenta, curva = legato).\n"
                 + "Loop Player – toque liga/desliga o loop sincronizado.\n\n"
-                + "◀| (esquerda) inverte o sample. Filtro: toque em LP/HP (ou no ícone do filtro de novo) para alternar passa-baixas/passa-altas.\n"
+                + "◀| (esquerda) inverte o sample. Filtro: toque de novo no ícone do filtro para alternar passa-baixas/passa-altas (o ícone muda).\n■ para tudo: vozes, loops e gestos; ▶ retoma.\n"
                 + "Sliders: volume · attack · release · pan.\n"
                 + "● grava seus gestos por N compassos e repete em loop.\n"
                 + "Rodapé: toque num slot para escolher, segure para o menu; mic grava no slot; círculos duplos gravam o mix (resample).";
         new AlertDialog.Builder(this).setTitle("Como tocar").setMessage(t).setPositiveButton("OK", null).show();
     }
 
+    private String versionName() {
+        try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception e) { return "?"; }
+    }
+
+    @SuppressWarnings("deprecation")
+    private long versionCode() {
+        try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionCode; } catch (Exception e) { return 0; }
+    }
+
     private void about() {
-        new AlertDialog.Builder(this).setTitle("Gf Drps").setMessage("Instrumento multitoque de samples para Android.\nTaxa de áudio: " + engine.rate + " Hz\nMIDI mapeado: " + midi.bindingCount())
+        new AlertDialog.Builder(this).setTitle("Gf Drps v" + versionName()).setMessage("Versão " + versionName() + " (build " + versionCode() + ")\nInstrumento multitoque de samples para Android.\nTaxa de áudio: " + engine.rate + " Hz\nMIDI mapeado: " + midi.bindingCount())
                 .setPositiveButton("OK", null).show();
     }
 

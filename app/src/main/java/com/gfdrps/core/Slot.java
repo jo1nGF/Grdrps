@@ -12,7 +12,7 @@ public final class Slot {
 
     // user parameters (written from UI thread, read on audio thread: plain volatiles)
     public volatile int mode = SLICER;
-    public volatile float volume = 0.8f, attack = 0f, release = 0.15f, pan = 0.5f;
+    public volatile float volume = 0.8f, attack = 0f, decay = 0.25f, sustain = 1f, release = 0.15f, pan = 0.5f;
     public volatile int div = 0;            // slices / arp steps per bar (0 = default 8); looper marker quantize (0 = free)
     public volatile int transpose = 0;      // semitones
     public volatile boolean infinite = false, gate = false, legato = false, arpRandom = false, muted = false;
@@ -31,9 +31,20 @@ public final class Slot {
     private final float[] tX = new float[16], tY = new float[16];
     private final Voice[] tVoice = new Voice[16];
     private int tCount;
-    // arp
-    private double nextStepFrame = -1;
-    private int arpIndex;
+    // arpeggiator
+    /** 0 up (left to right), 1 down, 2 up-down, 3 random, 4 order the fingers were put down. */
+    public volatile int arpDir = 0;
+    /** Notes per bar: 4, 8, 16 or 32 (1/4 .. 1/32 notes). */
+    public volatile int arpRate = 16;
+    /** Slice played by the last arp step and a 1..0 flash for the UI. */
+    public volatile int arpSlice = -1;
+    public volatile float arpFlash;
+    private double nextStepBeat = -1;
+    private boolean arpImmediate;
+    private int arpCounter, arpLast = -1;
+    private final int[] arpTmp = new int[16], arpOrd = new int[16];
+    private final float[] arpVel = new float[16];
+    private final double[] bounds = new double[2];
     private Voice looperV;
     private float curGL, curGR;
     // visual feedback (read by UI)
@@ -102,6 +113,15 @@ public final class Slot {
         return g;
     }
 
+    /** Fades every voice out quickly (no click) and forgets all fingers, arp steps and the looper. */
+    public void fadeAll() {
+        for (Voice v : voices) if (v.active) v.fastRelease();
+        tCount = 0;
+        for (int i = 0; i < tVoice.length; i++) tVoice[i] = null;
+        nextStepBeat = -1;
+        looperV = null;
+    }
+
     public void stopAll() {
         for (Voice v : voices) v.kill();
         tCount = 0;
@@ -110,6 +130,31 @@ public final class Slot {
 
     private double pitchRatio() { return Math.pow(2.0, transpose / 12.0); }
     private int sliceCount() { int d = div; return d <= 0 ? 8 : d; }
+
+    /** Index of the slice under horizontal position x (manual markers or even grid). */
+    public int sliceIndex(float x) {
+        float[] mk = markers;
+        if (mk != null) {
+            int i = 0;
+            while (i < mk.length && x >= mk[i]) i++;
+            return i;
+        }
+        int n = sliceCount();
+        return Math.min(n - 1, (int) (x * n));
+    }
+
+    /** Start/end (0..1) of slice idx. */
+    private void sliceBounds(int idx, double[] out) {
+        float[] mk = markers;
+        if (mk != null) {
+            out[0] = idx == 0 ? 0.0 : mk[idx - 1];
+            out[1] = idx >= mk.length ? 1.0 : mk[idx];
+        } else {
+            int n = sliceCount();
+            out[0] = (double) idx / n;
+            out[1] = (double) (idx + 1) / n;
+        }
+    }
 
     private int find(int id) {
         for (int i = 0; i < tCount; i++) if (tIds[i] == id) return i;
@@ -144,7 +189,7 @@ public final class Slot {
         v.kind = kind;
         v.ratio = s.sampleRate / (double) rate;
         v.engineRate = rate;
-        v.setEnv(attack, release);
+        v.setEnv(attack, decay, sustain, release);
         v.speed = pitchRatio();
         v.loop = false;
         v.vel = 1f;
@@ -172,22 +217,10 @@ public final class Slot {
         float vel = 0.25f + 0.75f * (1f - y);
         switch (mode) {
             case SLICER: {
-                float[] mk = markers;
-                double a0, a1;
-                if (mk != null) {
-                    int idx = 0;
-                    while (idx < mk.length && x >= mk[idx]) idx++;
-                    a0 = idx == 0 ? 0.0 : mk[idx - 1];
-                    a1 = idx == mk.length ? 1.0 : mk[idx];
-                } else {
-                    int n = sliceCount();
-                    int idx = Math.min(n - 1, (int) (x * n));
-                    a0 = (double) idx / n;
-                    a1 = (double) (idx + 1) / n;
-                }
+                sliceBounds(sliceIndex(x), bounds);
                 Voice v = prepare(Voice.PLAY, frame);
-                v.start = a0 * len;
-                v.end = a1 * len;
+                v.start = bounds[0] * len;
+                v.end = bounds[1] * len;
                 v.pos = v.start;
                 v.loop = infinite;
                 v.vel = vel;
@@ -234,7 +267,7 @@ public final class Slot {
                 break;
             }
             case ARP:
-                if (tCount == 1) nextStepFrame = frame;   // first step right away
+                if (tCount == 1) { arpCounter = 0; arpLast = -1; arpImmediate = true; }
                 break;
             case KEYBOARD: {
                 int key = Math.min(KEYS - 1, (int) (x * KEYS));
@@ -370,59 +403,116 @@ public final class Slot {
 
     // ---------------------------------------------------------------- arpeggiator step
 
-    private void arpStep(long frame, double bpm) {
+    /**
+     * One arpeggiator step. The slices under the held fingers form the pattern; direction decides the
+     * order, the rate decides the speed (locked to the project beat grid). Each step plays the start of the
+     * slice for one step's length (or the whole slice when the infinity button is on).
+     */
+    private void arpStep(long frame, double stepFrames) {
         Sample s = sample;
         if (s == null || tCount == 0) return;
         int len = s.length();
-        int n = tCount;
-        int idx = arpRandom ? Math.min(n - 1, (int) (Math.random() * n)) : (arpIndex++ % n);
-        float x = tX[idx], y = tY[idx];
-        double stepFrames = rate * 60.0 / bpm * 4.0 / sliceCountArp();
+        // distinct slices under the fingers, in touch order
+        int n = 0;
+        for (int k = 0; k < tCount; k++) {
+            int sl = sliceIndex(tX[k]);
+            boolean dup = false;
+            for (int q = 0; q < n; q++) if (arpOrd[q] == sl) { dup = true; break; }
+            if (!dup) { arpOrd[n] = sl; arpVel[n] = 0.25f + 0.75f * (1f - tY[k]); n++; }
+        }
+        if (n == 0) return;
+        int[] sorted = arpTmp;
+        System.arraycopy(arpOrd, 0, sorted, 0, n);
+        // keep velocities attached: sort indices by slice number
+        float[] vel = new float[n];
+        for (int a = 0; a < n; a++) vel[a] = arpVel[a];
+        if (arpDir != 4) {
+            for (int a = 1; a < n; a++) {                       // insertion sort, n <= 16
+                int key = sorted[a]; float kv = vel[a]; int b = a - 1;
+                while (b >= 0 && sorted[b] > key) { sorted[b + 1] = sorted[b]; vel[b + 1] = vel[b]; b--; }
+                sorted[b + 1] = key; vel[b + 1] = kv;
+            }
+        }
+        int pick;
+        int dir = arpRandom ? 3 : arpDir;
+        switch (dir) {
+            case 1: pick = n - 1 - (arpCounter % n); break;
+            case 2: {
+                int period = Math.max(1, 2 * n - 2);
+                int j = arpCounter % period;
+                pick = j < n ? j : period - j;
+                break;
+            }
+            case 3:
+                pick = (int) (Math.random() * n);
+                if (n > 1 && sorted[pick] == arpLast) pick = (pick + 1) % n;     // no immediate repeats
+                break;
+            default: pick = arpCounter % n; break;
+        }
+        arpCounter++;
+        int slice = sorted[pick];
+        arpLast = slice;
+        sliceBounds(slice, bounds);
         Voice v = prepare(Voice.PLAY, frame);
-        double srcLen = stepFrames * v.ratio * pitchRatio();
-        v.start = x * len;
-        v.end = Math.min(len, v.start + srcLen);
-        if (v.end - v.start < 64) v.start = Math.max(0, v.end - 64);
+        v.start = bounds[0] * len;
+        double sliceEnd = bounds[1] * len;
+        double play = infinite ? (sliceEnd - v.start) : stepFrames * v.ratio * pitchRatio() * 0.98;
+        v.end = Math.min(sliceEnd, v.start + play);
+        if (v.end - v.start < 64) v.end = Math.min(len, v.start + 64);
         v.pos = v.start;
-        v.vel = 0.25f + 0.75f * (1f - y);
-        v.setEnv(Math.min(attack, 0.005f), Math.max(0.01f, (float) (stepFrames / rate * 0.4)));
+        v.vel = vel[pick];
+        v.setEnv(attack, decay, sustain, infinite ? release : Math.min(release, (float) (stepFrames / rate * 0.9)));
         v.trigger(-4, frame);
+        arpSlice = slice;
+        arpFlash = 1f;
     }
-
-    private int sliceCountArp() { int d = div; return d <= 0 ? 8 : d; }
 
     // ---------------------------------------------------------------- audio
 
     /** Adds this slot's stereo output into outL/outR (after its own effects). n <= MAX_BLOCK. */
     public void render(float[] outL, float[] outR, int n, long frame, double bpm, boolean playing) {
+        render(outL, outR, n, frame, bpm, playing, frame * bpm / (60.0 * rate));
+    }
+
+    /** beat = position on the project's beat grid at the start of the block (arp steps lock to it). */
+    public void render(float[] outL, float[] outR, int n, long frame, double bpm, boolean playing, double beat) {
         Sample s = sample;
         java.util.Arrays.fill(mono, 0, n, 0f);
         java.util.Arrays.fill(bl, 0, n, 0f);
         java.util.Arrays.fill(br, 0, n, 0f);
         if (s != null) {
             int off = 0;
-            // sample-accurate arp steps: split the block at step boundaries
+            // sample-accurate arp steps on the beat grid: split the block at step boundaries
+            final double framesPerBeat = rate * 60.0 / bpm;
+            final double stepBeats = 4.0 / Math.max(1, arpRate);
             while (off < n) {
                 int chunk = n - off;
-                if (mode == ARP && tCount > 0 && nextStepFrame >= 0) {
-                    double stepFrames = rate * 60.0 / bpm * 4.0 / sliceCountArp();
-                    while (nextStepFrame < frame + off) nextStepFrame += stepFrames;
-                    int until = (int) (nextStepFrame - frame);
-                    if (until <= off) {
-                        arpStep(frame + off, bpm);
-                        nextStepFrame += stepFrames;
+                if (mode == ARP && tCount > 0) {
+                    double cur = beat + off / framesPerBeat;
+                    if (nextStepBeat < 0 || nextStepBeat < cur - stepBeats * 2) nextStepBeat = Math.ceil(cur / stepBeats - 1e-9) * stepBeats;
+                    if (arpImmediate) {
+                        arpImmediate = false;
+                        double untilNext = (nextStepBeat - cur) * framesPerBeat;
+                        if (untilNext > 0.2 * stepBeats * framesPerBeat) {        // first note now, the rest on the grid
+                            arpStep(frame + off, stepBeats * framesPerBeat);
+                            continue;
+                        }
+                    }
+                    double until = (nextStepBeat - cur) * framesPerBeat;
+                    if (until <= 0.5) {
+                        arpStep(frame + off, stepBeats * framesPerBeat);
+                        nextStepBeat += stepBeats;
                         continue;
                     }
-                    chunk = Math.min(chunk, until - off);
-                } else if (mode != ARP || tCount == 0) {
-                    nextStepFrame = -1;
-                } else if (nextStepFrame < 0) {
-                    nextStepFrame = frame + off;   // switched into Arp mode with fingers already down
+                    chunk = Math.min(chunk, (int) Math.ceil(until));
+                } else {
+                    nextStepBeat = -1;
                 }
                 renderVoices(off, chunk, bpm, playing);
                 off += chunk;
             }
         }
+        arpFlash *= 0.92f;
         float p = pan;
         float gl = (float) Math.cos(p * Math.PI * 0.5) * 1.414f * 0.7071f;
         float gr = (float) Math.sin(p * Math.PI * 0.5) * 1.414f * 0.7071f;
@@ -455,6 +545,7 @@ public final class Slot {
         Sample s = sample;
         for (Voice v : voices) {
             if (!v.active) continue;
+            if (v.touchId != -4) v.setEnv(attack, decay, sustain, release);     // ADSR sliders act on held notes live
             if (v.touchId == -2 && s != null) {
                 if (!playing) { v.release(); continue; }
                 double dur = s.length() / (double) s.sampleRate;

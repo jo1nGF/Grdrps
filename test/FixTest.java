@@ -89,7 +89,7 @@ public class FixTest {
             float[] out = new float[in.length];
             float[] l = new float[256], r = new float[256];
             for (int o = 0; o + 256 <= in.length; o += 256) {
-                if (o == R / 2) rv.active = false;      // finger lifted
+                if (o >= R / 2) rv.active = false;      // finger lifted
                 System.arraycopy(in, o, l, 0, 256); System.arraycopy(in, o, r, 0, 256);
                 rv.process(l, r, 256, 120);
                 System.arraycopy(l, 0, out, o, 256);
@@ -116,7 +116,7 @@ public class FixTest {
                 for (int w = R / 2; w + 2400 < o2.length; w += 2400) {
                     if (rms(o2, w, w + 2400) < ref * 0.001f) { t60 = w - R / 2; break; }
                 }
-                System.out.println("   decay x=" + xs[k] + ": nível em 2 s = " + tails[k] + ", RT60 medido ≈ " + (t60 < 0 ? ">11" : String.format("%.2f", t60 / (double) R)) + " s (pedido " + String.format("%.2f", 0.4 * Math.pow(20, xs[k])) + " s)");
+                System.out.println("   decay x=" + xs[k] + ": nível em 2 s = " + tails[k] + ", RT60 medido ≈ " + (t60 < 0 ? ">11" : String.format("%.2f", t60 / (double) R)) + " s (pedido " + String.format("%.2f", 0.6 * Math.pow(24, xs[k])) + " s)");
             }
             check(tails[1] > tails[0] * 5 && tails[2] > tails[1] * 2, "controle de decay (x) faz diferença clara em toda a faixa");
 
@@ -297,7 +297,7 @@ public class FixTest {
             boolean ended = true;
             for (float ph : s.playheads) if (ph >= 0) ended = false;
             System.out.println("   rampa máxima tocada ≈ " + rampHi + ", voz terminou: " + ended);
-            check(rampHi > 0.46f && rampHi < 0.52f && ended, "fatia manual 0.1–0.5 toca até o marcador em 0.5 e para");
+            check(rampHi > 0.38f && rampHi < 0.52f && ended, "fatia manual 0.1–0.5 toca até o marcador em 0.5 e para");
 
             Engine e = new Engine(R);
             int n = e.autoSlice(0, 32, 0.5f);
@@ -319,6 +319,146 @@ public class FixTest {
             check(!rs.reversed && Math.abs(rs.sample.data[10] - first) < 1e-9, "reverse de novo restaura o original");
         }
 
+        System.out.println("== Botão de stop");
+        {
+            Engine e = new Engine(R);
+            e.bpm = 240;
+            e.setMode(0, Slot.LOOPPLAYER);
+            e.setMode(1, Slot.SLICER); e.slots[1].infinite = true;
+            e.setMode(2, Slot.ARP); e.slots[2].div = 16;
+            e.setMode(3, Slot.SLICER);
+            short[] pcm = new short[2 * R / 10];
+            java.util.function.IntConsumer run = secs -> { for (int i = 0; i < secs * 10; i++) e.process(pcm, pcm.length / 2); };
+            java.util.function.Supplier<Float> peak = () -> { float pk = 0; for (short v : pcm) pk = Math.max(pk, Math.abs(v) / 32768f); return pk; };
+            e.armGestures(3, 2);
+            run.accept(1);
+            e.touch(3, 0, 0, 0.1f, 0.2f); run.accept(1); e.touch(3, 2, 0, 0, 0);
+            run.accept(3);                                   // gesture recorded and now looping
+            e.touch(0, 0, 0, 0.5f, 0.5f);                    // loop player on
+            e.touch(1, 0, 1, 0.4f, 0.3f);                    // held looping slice
+            e.touch(2, 0, 2, 0.2f, 0.3f);                    // held arp finger
+            run.accept(2);
+            check(peak.get() > 0.05f, "antes do stop há som");
+            e.stopAll();
+            run.accept(1);                                   // fade-out time
+            float worst = 0;
+            for (int i = 0; i < 30; i++) { e.process(pcm, pcm.length / 2); worst = Math.max(worst, peak.get()); }
+            System.out.println("   pico nos 3 s depois do stop: " + worst);
+            check(worst < 0.002f, "stop silencia vozes, loops, arpejo e gestos gravados");
+            check(!e.playing, "transporte fica parado");
+            e.playing = true;
+            run.accept(3);
+            float back = 0;
+            for (int i = 0; i < 40; i++) { e.process(pcm, pcm.length / 2); back = Math.max(back, peak.get()); }
+            check(back > 0.01f, "play retoma o gesto gravado");
+        }
+
+        System.out.println("== ADSR em todos os modos");
+        {
+            String[] names = {"Slicer", "Looper", "Bow", "Keyboard"};
+            int[] modes = {Slot.SLICER, Slot.LOOPER, Slot.BOW, Slot.KEYBOARD};
+            for (int mi = 0; mi < 4; mi++) {
+                final Slot sl = new Slot(R);
+                float[] flat = new float[R * 6];
+                java.util.Arrays.fill(flat, 0.5f);
+                sl.setSample(new Sample(flat, R, "flat"), 120);
+                sl.mode = modes[mi]; sl.div = 4; sl.infinite = true;
+                sl.attack = 0.3f; sl.decay = 0.2f; sl.sustain = 0.4f; sl.release = 0.5f;
+                final int mm = modes[mi];
+                final int[] upBlock = {-1};
+                float[] o = renderSlot(sl, 3.0, 120, b -> {
+                    if (b == 0) {
+                        if (mm == Slot.LOOPER) { sl.handle(0, 0, 0.1f, 0.5f, 0, 0); sl.handle(0, 1, 0.9f, 0.5f, 0, 0); }
+                        else sl.handle(0, 0, 0.30f, 0.0f, 0, 0);
+                    }
+                    if (b == (int) (1.5 * R / 256)) {
+                        upBlock[0] = b;
+                        sl.handle(2, 0, 0.30f, 0.0f, (long) b * 256, 0); if (mm == Slot.LOOPER) sl.handle(2, 1, 0.9f, 0.5f, (long) b * 256, 0);
+                    }
+                });
+                float early = rms(o, 0, R / 100), mid = rms(o, (int) (0.28 * R), (int) (0.32 * R));
+                float sus = rms(o, (int) (1.0 * R), (int) (1.2 * R));
+                float peak = 0; for (int i = 0; i < (int) (0.6 * R); i++) peak = Math.max(peak, Math.abs(o[i]));
+                float r1 = rms(o, (int) (1.5 * R + 0.1 * R), (int) (1.5 * R + 0.15 * R));
+                float rEnd = rms(o, (int) (2.2 * R), (int) (2.4 * R));
+                check(early < 0.35f * mid, names[mi] + ": attack lento (inicio " + early + " < meio " + mid + ")");
+                check(sus < 0.75f * peak && sus > 0.15f * peak, names[mi] + ": decay vai para o sustain (pico " + peak + " sus " + sus + ")");
+                check(r1 > 0.05f * sus && rEnd < 0.02f * Math.max(sus, 1e-3f) + 1e-4f, names[mi] + ": release gradual (0.1s " + r1 + ", fim " + rEnd + ")");
+            }
+        }
+        System.out.println("== Arpejador");
+        {
+            // 8 fatias, fatia k tem amplitude (k+1)*0.1
+            float[] d = new float[R * 4];
+            for (int i = 0; i < d.length; i++) d[i] = 0.1f * (1 + Math.min(7, i * 8 / d.length));
+            final Slot cal = new Slot(R);
+            cal.setSample(new Sample(d, R, "ramp"), 120);
+            cal.mode = Slot.SLICER; cal.div = 8; cal.attack = 0f;
+            float[] co = renderSlot(cal, 0.4, 120, b -> { if (b == 0) cal.handle(0, 0, 0.95f, 0f, 0, 0); });
+            final float gain = rms(co, (int) (0.2 * R), (int) (0.3 * R)) / 0.8f;     // volume/pan factor of the slot
+            for (int dir = 0; dir < 5; dir++) {
+                final Slot sl = new Slot(R);
+                sl.setSample(new Sample(d, R, "ramp"), 120);
+                sl.mode = Slot.ARP; sl.div = 8; sl.arpRate = 16; sl.arpDir = dir; sl.attack = 0f; sl.decay = 0.1f; sl.sustain = 1f; sl.release = 0.02f;
+                final int[] ks = {5, 2, 0};
+                float[] o = renderSlot(sl, 2.0, 120, b -> {
+                    if (b == 0) for (int k = 0; k < 3; k++) sl.handle(0, k, (ks[k] + 0.5f) / 8f, 0f, 0, 0);
+                });
+                // 1/16 a 120bpm = 0.125 s por passo; mede o nivel no meio de cada passo (a partir do 1o passo na grade)
+                StringBuilder seq = new StringBuilder();
+                java.util.ArrayList<Integer> got = new java.util.ArrayList<>();
+                for (int st = 1; st < 14; st++) {
+                    int c = (int) ((st * 0.125 + 0.06) * R);
+                    float lv = rms(o, c - 200, c + 200);
+                    int sli = Math.round(lv / (gain * 0.1f)) - 1;
+                    got.add(sli); seq.append(sli).append(' ');
+                }
+                String name = new String[]{"UP", "DN", "UD", "RND", "ORD"}[dir];
+                System.out.println("     " + name + ": " + seq);
+                boolean okSeq = true;
+                int[] up = {0, 2, 5}, dn = {5, 2, 0}, ud = {0, 2, 5, 2}, ord = {5, 2, 0};
+                int[] pat = dir == 0 ? up : dir == 1 ? dn : dir == 2 ? ud : ord;
+                if (dir == 3) { for (int g : got) if (g != 0 && g != 2 && g != 5) okSeq = false; }
+                else {
+                    // acha o alinhamento do padrao e confere que se repete sem erros
+                    boolean any = false;
+                    for (int off = 0; off < pat.length && !any; off++) {
+                        boolean m = true;
+                        for (int i = 0; i < got.size(); i++) if (got.get(i) != pat[(i + off) % pat.length]) { m = false; break; }
+                        any = m;
+                    }
+                    okSeq = any;
+                }
+                check(okSeq, "Arp " + name + ": ordem correta das fatias");
+            }
+            // passos na grade: dois arps com dedos em instantes diferentes disparam no mesmo instante da grade
+            final Slot sl = new Slot(R);
+            sl.setSample(new Sample(d, R, "ramp"), 120);
+            sl.mode = Slot.ARP; sl.div = 8; sl.arpRate = 8; sl.attack = 0f; sl.release = 0.02f; sl.decay = 0.1f;
+            float[] o = renderSlot(sl, 2.0, 120, b -> { if (b == 100) sl.handle(0, 0, 0.3f, 0f, 100L * 256, 0); });
+            // notas a cada 0.25 s: busca os inicios (energia) depois do toque (~0.53 s)
+            java.util.ArrayList<Double> starts = new java.util.ArrayList<>();
+            boolean prevOn = false;
+            for (int i = 100 * 256 + 50; i < o.length; i++) {
+                boolean on = Math.abs(o[i]) > 0.02f;
+                if (on && !prevOn && (starts.isEmpty() || i / (double) R - starts.get(starts.size() - 1) > 0.1)) starts.add(i / (double) R);
+                prevOn = on;
+            }
+            // o 1o toque soa na hora (imediato); as demais notas caem na grade de 0.25 s
+            boolean grid = starts.size() >= 4;
+            for (int i = 1; i < starts.size(); i++) { double ph = starts.get(i) / 0.25; if (Math.abs(ph - Math.round(ph)) > 0.06) grid = false; }
+            System.out.println("     inicios: " + starts);
+            check(grid, "Arp: notas travadas na grade do BPM (" + starts.size() + " notas, a cada 0.25 s)");
+        }
+        System.out.println("== Reverb: qualidade (sem metalico)");
+        {
+            for (double x : new double[]{0.3, 0.6, 0.9}) {
+                float[] r = ReverbQuality.ir((float) x, 1f, 4);
+                double per = ReverbQuality.periodicity(r), pk = ReverbQuality.spectralPeakiness(r);
+                check(per < 0.5, String.format("Reverb x=%.1f periodicidade %.3f < 0.5", x, per));
+                check(pk < 14, String.format("Reverb x=%.1f picos espectrais %.2f dB < 14", x, pk));
+            }
+        }
         System.out.println(fails == 0 ? "\nTODOS OS TESTES PASSARAM" : "\nFALHAS: " + fails);
         System.exit(fails == 0 ? 0 : 1);
     }

@@ -51,7 +51,7 @@ public final class ProjectStore {
             Slot s = e.slots[i];
             JSONObject o = new JSONObject();
             o.put("mode", s.mode); o.put("volume", s.volume); o.put("attack", s.attack);
-            o.put("release", s.release); o.put("pan", s.pan); o.put("div", s.div);
+            o.put("decay", s.decay); o.put("sustain", s.sustain); o.put("arpDir", s.arpDir); o.put("arpRate", s.arpRate); o.put("release", s.release); o.put("pan", s.pan); o.put("div", s.div);
             o.put("transpose", s.transpose); o.put("infinite", s.infinite); o.put("gate", s.gate);
             o.put("legato", s.legato); o.put("arpRandom", s.arpRandom); o.put("sampleBeats", s.sampleBeats);
             o.put("reversed", s.reversed);
@@ -86,6 +86,8 @@ public final class ProjectStore {
             s.volume = (float) o.optDouble("volume", 0.8);
             s.attack = (float) o.optDouble("attack", 0);
             s.release = (float) o.optDouble("release", 0.15);
+            s.decay = (float) o.optDouble("decay", 0.25); s.sustain = (float) o.optDouble("sustain", 1.0);
+            s.arpDir = o.optInt("arpDir", 0); s.arpRate = o.optInt("arpRate", 16);
             s.pan = (float) o.optDouble("pan", 0.5);
             s.div = o.optInt("div", 0);
             s.transpose = o.optInt("transpose", 0);
