@@ -46,6 +46,25 @@ public final class Slot {
     private final float[] arpVel = new float[16];
     private final double[] bounds = new double[2];
     private Voice looperV;
+
+    // latch / quantize / slicer auto-play
+    /** Latch: lifting the finger (or changing play mode) leaves the sound running until the next gesture. */
+    public volatile boolean latch = false;
+    /** Slicer & Keyboard: triggers wait for the next grid step ({@link #arpRate} notes per bar). */
+    public volatile boolean quantize = false;
+    /** Slicer: plays the slices by itself, left to right (or shuffled), one per grid step. */
+    public volatile boolean autoPlay = false, shuffle = false;
+    /** Set when a touch needs the transport running (loop player); the engine clears it. */
+    public volatile boolean requestTransport = false;
+    private int lastMode = -1, physDown;
+    private boolean arpLatched;
+    private double curBeat, nextAutoBeat = -1;
+    private int autoCounter, autoLast = -1;
+    private final int[] pId = new int[8];
+    private final float[] pX = new float[8], pY = new float[8];
+    private final double[] pBeat = new double[8];
+    private final boolean[] pUp = new boolean[8];
+    private int pN;
     private float curGL, curGR;
     // visual feedback (read by UI)
     public final float[] playheads = new float[VOICES];
@@ -120,6 +139,29 @@ public final class Slot {
         for (int i = 0; i < tVoice.length; i++) tVoice[i] = null;
         nextStepBeat = -1;
         looperV = null;
+        autoPlay = false;
+        pN = 0; physDown = 0; arpLatched = false; nextAutoBeat = -1;
+    }
+
+    /** Releases every note kept alive by the latch (audio thread). exceptLooper keeps the looper voice for reuse. */
+    private void releaseLatched(boolean exceptLooper) {
+        for (Voice v : voices) {
+            if (v.active && v.latched && !(exceptLooper && v == looperV)) { v.latched = false; v.release(); }
+        }
+    }
+
+    private void releaseAuto() {
+        for (Voice v : voices) if (v.active && v.touchId == -5 && !v.releasing) v.release();
+    }
+
+    /** Called on the audio thread when the latch button changes. */
+    public void applyLatch(boolean on) {
+        latch = on;
+        if (!on) {
+            releaseLatched(false);
+            if (looperV != null && looperV.active && looperV.touchId == -3 && tCount == 0) looperV.release();
+            if (arpLatched && physDown == 0) { tCount = 0; arpLatched = false; nextStepBeat = -1; }
+        }
     }
 
     public void stopAll() {
@@ -145,16 +187,22 @@ public final class Slot {
 
     /** Start/end (0..1) of slice idx. */
     private void sliceBounds(int idx, double[] out) {
-        float[] mk = markers;
+        float[] mk = markers;                       // one snapshot: the UI may change the slices at any time
         if (mk != null) {
+            if (idx < 0) idx = 0;
+            if (idx > mk.length) idx = mk.length;
             out[0] = idx == 0 ? 0.0 : mk[idx - 1];
             out[1] = idx >= mk.length ? 1.0 : mk[idx];
         } else {
             int n = sliceCount();
+            if (idx < 0) idx = 0;
+            if (idx > n - 1) idx = n - 1;
             out[0] = (double) idx / n;
             out[1] = (double) (idx + 1) / n;
         }
     }
+
+    private int sliceTotal() { float[] mk = markers; return mk != null ? mk.length + 1 : sliceCount(); }
 
     private int find(int id) {
         for (int i = 0; i < tCount; i++) if (tIds[i] == id) return i;
@@ -202,14 +250,48 @@ public final class Slot {
         Sample s = sample;
         if (s == null || s.length() < 2) return;
         x = clamp01(x); y = clamp01(y);
-        if (type == 0) down(id, x, y, frame, beat, s);
-        else if (type == 1) move(id, x, y, s);
+        if (type != 0 || !(quantize && (mode == SLICER || mode == KEYBOARD))) {
+            int q = pendingIndex(id);
+            if (q >= 0 && type == 1) { pX[q] = x; pY[q] = y; return; }              // finger still moving before its quantized start
+            if (q >= 0 && type == 2) { pUp[q] = true; return; }                     // lifted early: released right after it starts
+        }
+        if (type == 0) {
+            if (quantize && (mode == SLICER || mode == KEYBOARD) && pN < pId.length) {
+                double step = 4.0 / Math.max(1, arpRate);
+                int q = pendingIndex(id);
+                if (q < 0) q = pN++;
+                pId[q] = id; pX[q] = x; pY[q] = y; pUp[q] = false;
+                pBeat[q] = Math.ceil(curBeat / step - 1e-9) * step;
+                return;
+            }
+            down(id, x, y, frame, beat, s);
+        } else if (type == 1) move(id, x, y, s);
         else up(id);
+    }
+
+    private int pendingIndex(int id) {
+        for (int i = 0; i < pN; i++) if (pId[i] == id) return i;
+        return -1;
+    }
+
+    private void firePending(double uptoBeat, long frame, Sample s) {
+        for (int i = 0; i < pN; ) {
+            if (pBeat[i] <= uptoBeat) {
+                int id = pId[i]; float x = pX[i], y = pY[i]; boolean upNow = pUp[i];
+                for (int j = i; j < pN - 1; j++) { pId[j] = pId[j + 1]; pX[j] = pX[j + 1]; pY[j] = pY[j + 1]; pBeat[j] = pBeat[j + 1]; pUp[j] = pUp[j + 1]; }
+                pN--;
+                down(id, x, y, frame, curBeat, s);
+                if (upNow) up(id);
+            } else i++;
+        }
     }
 
     private void down(int id, float x, float y, long frame, double beat, Sample s) {
         int k = find(id);
         if (k >= 0) { remove(k); }
+        if (mode == ARP && arpLatched && physDown == 0) { tCount = 0; arpLatched = false; }     // a new gesture replaces the latched pattern
+        if (latch && physDown == 0 && mode != LOOPPLAYER) releaseLatched(mode == LOOPER);
+        physDown++;
         if (tCount >= tIds.length) return;
         k = tCount++;
         tIds[k] = id; tX[k] = x; tY[k] = y; tVoice[k] = null;
@@ -294,6 +376,7 @@ public final class Slot {
                     v.speed = pitchRatio();
                     v.trigger(-2, frame);   // -2 marks a loop-player voice (tempo-synced in render)
                     tVoice[k] = v;
+                    requestTransport = true;        // the very first touch starts it, no need to press play
                 }
                 break;
             }
@@ -321,7 +404,7 @@ public final class Slot {
             case SCRATCH:
                 if (v != null && v.active) {
                     double t = v.scrBase + (x - v.center) * v.scrSpan;
-                    v.scrTarget = Math.max(0, Math.min(len - 1, t));
+                    v.scratchTo(Math.max(0, Math.min(len - 1, t)));
                 }
                 break;
             case KEYBOARD:
@@ -338,10 +421,13 @@ public final class Slot {
     private void up(int id) {
         int k = find(id);
         if (k < 0) return;
+        if (physDown > 0) physDown--;
         Voice v = tVoice[k];
+        if (mode == ARP && latch) { if (physDown == 0) arpLatched = true; return; }       // keep the arp pattern running
         remove(k);
         if (mode == LOOPER) { updateLooper(0, sample); return; }
         if (v == null || !v.active || v.touchId != id) return;
+        if (latch && mode != LOOPPLAYER) { v.latched = true; return; }                  // latch: the note keeps sounding
         boolean rel = v.kind != Voice.PLAY || mode == KEYBOARD || v.loop && mode != LOOPPLAYER || gate && mode != LOOPPLAYER;
         if (mode == LOOPPLAYER) rel = gate;
         if (rel) v.release(); else v.held = false;
@@ -364,9 +450,12 @@ public final class Slot {
         int len = s.length();
         Voice lv = looperV;
         if (tCount == 0) {
-            if (lv.active && lv.kind == Voice.PLAY && lv.touchId == -3) lv.release();
+            if (lv != null && lv.active && lv.kind == Voice.PLAY && lv.touchId == -3) {
+                if (latch) lv.latched = true; else lv.release();
+            }
             return;
         }
+        if (lv != null) lv.latched = false;
         double a, b;
         boolean reverse = false;
         int q = div;
@@ -467,6 +556,31 @@ public final class Slot {
         arpFlash = 1f;
     }
 
+    /** Slicer auto-play: triggers the next slice (the previous auto note fades out with the release time). */
+    private void autoStep(long frame) {
+        Sample sm = sample;
+        if (sm == null) return;
+        int n = sliceTotal();
+        int idx;
+        if (shuffle && n > 1) {
+            idx = (int) (Math.random() * n);
+            if (idx == autoLast) idx = (idx + 1 + (int) (Math.random() * (n - 1))) % n;
+        } else idx = autoCounter % n;
+        autoCounter++;
+        autoLast = idx;
+        releaseAuto();
+        int len = sm.length();
+        sliceBounds(idx, bounds);
+        Voice v = prepare(Voice.PLAY, frame);
+        v.start = bounds[0] * len;
+        v.end = bounds[1] * len;
+        v.pos = v.start;
+        v.vel = 0.9f;
+        v.trigger(-5, frame);
+        arpSlice = idx;
+        arpFlash = 1f;
+    }
+
     // ---------------------------------------------------------------- audio
 
     /** Adds this slot's stereo output into outL/outR (after its own effects). n <= MAX_BLOCK. */
@@ -480,15 +594,38 @@ public final class Slot {
         java.util.Arrays.fill(mono, 0, n, 0f);
         java.util.Arrays.fill(bl, 0, n, 0f);
         java.util.Arrays.fill(br, 0, n, 0f);
+        // play mode changed: the finger table belongs to the old mode. With latch the sound keeps going.
+        int m = mode;
+        if (m != lastMode) {
+            if (lastMode >= 0) {
+                for (int i = 0; i < tCount; i++) {
+                    Voice tv = tVoice[i];
+                    if (tv != null && tv.active) { if (latch) tv.latched = true; else tv.release(); }
+                }
+                if (looperV != null && looperV.active && looperV.touchId == -3) { if (latch) looperV.latched = true; else looperV.release(); }
+                tCount = 0; physDown = 0; arpLatched = false; nextStepBeat = -1; pN = 0;
+                if (!latch && autoPlay) { autoPlay = false; releaseAuto(); }
+            }
+            lastMode = m;
+        }
         if (s != null) {
             int off = 0;
-            // sample-accurate arp steps on the beat grid: split the block at step boundaries
             final double framesPerBeat = rate * 60.0 / bpm;
             final double stepBeats = 4.0 / Math.max(1, arpRate);
             while (off < n) {
                 int chunk = n - off;
+                final double cur = beat + off / framesPerBeat;
+                curBeat = cur;
+                // quantized triggers (Slicer / Keyboard)
+                if (pN > 0) {
+                    double next = Double.MAX_VALUE;
+                    for (int i = 0; i < pN; i++) next = Math.min(next, pBeat[i]);
+                    double until = (next - cur) * framesPerBeat;
+                    if (until <= 0.5) { firePending(cur + 0.5 / framesPerBeat, frame + off, s); continue; }
+                    chunk = Math.min(chunk, (int) Math.ceil(until));
+                }
+                // sample-accurate arp steps on the beat grid
                 if (mode == ARP && tCount > 0) {
-                    double cur = beat + off / framesPerBeat;
                     if (nextStepBeat < 0 || nextStepBeat < cur - stepBeats * 2) nextStepBeat = Math.ceil(cur / stepBeats - 1e-9) * stepBeats;
                     if (arpImmediate) {
                         arpImmediate = false;
@@ -508,9 +645,26 @@ public final class Slot {
                 } else {
                     nextStepBeat = -1;
                 }
+                // slicer auto-play: every grid step triggers the next slice (left to right, or shuffled)
+                if (autoPlay) {
+                    if (nextAutoBeat < 0 || nextAutoBeat < cur - stepBeats * 2) {
+                        nextAutoBeat = Math.ceil(cur / stepBeats - 1e-9) * stepBeats; autoCounter = 0; autoLast = -1;
+                    }
+                    double until = (nextAutoBeat - cur) * framesPerBeat;
+                    if (until <= 0.5) {
+                        autoStep(frame + off);
+                        nextAutoBeat += stepBeats;
+                        continue;
+                    }
+                    chunk = Math.min(chunk, (int) Math.ceil(until));
+                } else if (nextAutoBeat >= 0) {
+                    nextAutoBeat = -1;
+                    releaseAuto();
+                }
                 renderVoices(off, chunk, bpm, playing);
                 off += chunk;
             }
+            curBeat = beat + n / framesPerBeat;
         }
         arpFlash *= 0.92f;
         float p = pan;

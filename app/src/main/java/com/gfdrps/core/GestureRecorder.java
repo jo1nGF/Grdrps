@@ -20,19 +20,44 @@ public final class GestureRecorder {
     private float[] x = new float[1024], y = new float[1024];
     private int count;
     private double startBeat, lastPhase;
-    private final boolean[] held = new boolean[16];
+    private final boolean[] held = new boolean[16], fxHeld = new boolean[32];
+    private boolean waitTouch;
 
     public int eventCount() { return count; }
     private double loopBeats() { return bars * 4.0; }
 
-    /** Arms recording to start on the next bar line. */
+    /** Arms recording: it starts by itself on the first touch (waveform or effect pad). */
     public void arm(double beatNow, int nBars) {
         bars = Math.max(1, Math.min(MAX_BARS, nBars));
-        startBeat = Math.ceil(beatNow / 4.0) * 4.0;
+        startBeat = beatNow;
+        waitTouch = true;
         count = 0;
         java.util.Arrays.fill(held, false);
+        java.util.Arrays.fill(fxHeld, false);
         state = ARMED;
     }
+
+    /** Loads a saved take and starts replaying it (locked to the bar clock). */
+    public void load(int nBars, double[] ph, int[] ty, int[] ids, float[] px, float[] py) {
+        int n = Math.min(ph.length, Math.min(ty.length, Math.min(ids.length, Math.min(px.length, py.length))));
+        n = Math.min(n, MAX_EVENTS);
+        bars = Math.max(1, Math.min(MAX_BARS, nBars));
+        int cap = Math.max(1024, n);
+        phase = java.util.Arrays.copyOf(ph, cap); type = java.util.Arrays.copyOf(ty, cap); id = java.util.Arrays.copyOf(ids, cap);
+        x = java.util.Arrays.copyOf(px, cap); y = java.util.Arrays.copyOf(py, cap);
+        count = n;
+        startBeat = 0; lastPhase = 0; waitTouch = false;
+        java.util.Arrays.fill(held, false); java.util.Arrays.fill(fxHeld, false);
+        state = n > 0 ? PLAYING : IDLE;
+    }
+
+    // read-only view of the take, for saving
+    public int bars() { return bars; }
+    public double phaseAt(int i) { return phase[i]; }
+    public int typeAt(int i) { return type[i]; }
+    public int idAt(int i) { return id[i]; }
+    public float xAt(int i) { return x[i]; }
+    public float yAt(int i) { return y[i]; }
 
     public void clear(Emitter em) {
         if (state == PLAYING) releaseHeld(em);
@@ -42,12 +67,16 @@ public final class GestureRecorder {
     }
 
     public void add(int t, int touchId, float px, float py, double beat) {
+        if (state == ARMED && waitTouch && t != 2 && t != 5) {      // first touch: the take starts right now
+            startBeat = beat; waitTouch = false; state = RECORDING; lastPhase = 0;
+        }
         if (state != RECORDING || count >= MAX_EVENTS) return;
         if (count == phase.length) grow();
         phase[count] = Math.max(0, beat - startBeat);
         type[count] = t; id[count] = touchId; x[count] = px; y[count] = py;
         count++;
-        if (touchId >= 0 && touchId < held.length) held[touchId] = t != 2;
+        if (t >= 3) { if (touchId >= 0 && touchId < fxHeld.length) fxHeld[touchId] = t != 5; }
+        else if (touchId >= 0 && touchId < held.length) held[touchId] = t != 2;
     }
 
     private void grow() {
@@ -61,6 +90,7 @@ public final class GestureRecorder {
 
     private void releaseHeld(Emitter em) {
         for (int i = 0; i < held.length; i++) if (held[i]) { em.emit(2, i + ID_OFFSET, 0f, 0f); held[i] = false; }
+        for (int i = 0; i < fxHeld.length; i++) if (fxHeld[i]) { em.emit(5, i + ID_OFFSET, 0f, 0f); fxHeld[i] = false; }
     }
 
     /** Called once per audio block with the beat at block start. */
@@ -68,16 +98,15 @@ public final class GestureRecorder {
         int st = state;
         if (st == IDLE) return;
         double len = loopBeats();
-        if (st == ARMED) {
-            if (beatNow >= startBeat) state = RECORDING; else return;
-            st = RECORDING;
-        }
+        if (st == ARMED) return;           // waiting for the first touch
         if (st == RECORDING) {
             progress = (float) Math.min(1.0, (beatNow - startBeat) / len);
             if (beatNow - startBeat >= len) {
                 // close any finger still down so the loop has no stuck notes
                 for (int i = 0; i < held.length; i++) if (held[i]) add(2, i, 0f, 0f, startBeat + len - 1e-6);
+                for (int i = 0; i < fxHeld.length; i++) if (fxHeld[i]) add(5, i, 0f, 0f, startBeat + len - 1e-6);
                 java.util.Arrays.fill(held, false);
+                java.util.Arrays.fill(fxHeld, false);
                 state = count > 0 ? PLAYING : IDLE;
                 lastPhase = 0;
             }
@@ -102,7 +131,8 @@ public final class GestureRecorder {
             double p = phase[i];
             if (p >= a && p < b) {
                 int tid = id[i];
-                if (tid >= 0 && tid < held.length) held[tid] = type[i] != 2;
+                if (type[i] >= 3) { if (tid >= 0 && tid < fxHeld.length) fxHeld[tid] = type[i] != 5; }
+                else if (tid >= 0 && tid < held.length) held[tid] = type[i] != 2;
                 em.emit(type[i], tid + ID_OFFSET, x[i], y[i]);
             }
         }

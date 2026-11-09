@@ -3,6 +3,7 @@ package com.gfdrps.android;
 import android.content.Context;
 
 import com.gfdrps.core.Engine;
+import com.gfdrps.core.GestureRecorder;
 import com.gfdrps.core.Sample;
 import com.gfdrps.core.Slot;
 import com.gfdrps.core.WavIO;
@@ -55,6 +56,19 @@ public final class ProjectStore {
             o.put("transpose", s.transpose); o.put("infinite", s.infinite); o.put("gate", s.gate);
             o.put("legato", s.legato); o.put("arpRandom", s.arpRandom); o.put("sampleBeats", s.sampleBeats);
             o.put("reversed", s.reversed);
+            o.put("quantize", s.quantize); o.put("shuffle", s.shuffle);
+            GestureRecorder gr = s.gestures;
+            int gn = gr.state == GestureRecorder.PLAYING ? gr.eventCount() : 0;
+            if (gn > 0) {                                           // the recorded take (finger and effect-pad events)
+                JSONObject g = new JSONObject();
+                JSONArray gp = new JSONArray(), gt = new JSONArray(), gi = new JSONArray(), gx = new JSONArray(), gy = new JSONArray();
+                for (int k = 0; k < gn; k++) {
+                    gp.put(Math.round(gr.phaseAt(k) * 10000.0) / 10000.0); gt.put(gr.typeAt(k)); gi.put(gr.idAt(k));
+                    gx.put(Math.round(gr.xAt(k) * 10000.0) / 10000.0); gy.put(Math.round(gr.yAt(k) * 10000.0) / 10000.0);
+                }
+                g.put("bars", gr.bars()); g.put("p", gp); g.put("t", gt); g.put("i", gi); g.put("x", gx); g.put("y", gy);
+                o.put("gestures", g);
+            }
             float[] mk = s.markers;
             if (mk != null) { JSONArray ma = new JSONArray(); for (float v : mk) ma.put((double) v); o.put("markers", ma); }
             Sample sm = s.sample;
@@ -95,6 +109,16 @@ public final class ProjectStore {
             s.gate = o.optBoolean("gate", false);
             s.legato = o.optBoolean("legato", false);
             s.arpRandom = o.optBoolean("arpRandom", false);
+            s.quantize = o.optBoolean("quantize", false);
+            s.shuffle = o.optBoolean("shuffle", false);
+            JSONObject gj = o.optJSONObject("gestures");
+            if (gj != null) {
+                JSONArray gp = gj.getJSONArray("p"), gt = gj.getJSONArray("t"), gi = gj.getJSONArray("i"), gx = gj.getJSONArray("x"), gy = gj.getJSONArray("y");
+                int gn = Math.min(gp.length(), Math.min(gt.length(), Math.min(gi.length(), Math.min(gx.length(), gy.length()))));
+                double[] ph = new double[gn]; int[] ty = new int[gn], idd = new int[gn]; float[] xx = new float[gn], yy = new float[gn];
+                for (int k = 0; k < gn; k++) { ph[k] = gp.getDouble(k); ty[k] = gt.getInt(k); idd[k] = gi.getInt(k); xx[k] = (float) gx.getDouble(k); yy[k] = (float) gy.getDouble(k); }
+                e.setGestures(i, gj.optInt("bars", 4), ph, ty, idd, xx, yy);
+            } else e.clearGestures(i);
             File wav = new File(dir, "slot" + i + ".wav");
             if (wav.exists()) {
                 Sample sm = WavIO.read(readAll(wav), o.optString("name", "slot " + (i + 1)));

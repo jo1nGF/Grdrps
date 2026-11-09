@@ -8,6 +8,7 @@ final class Voice {
     volatile boolean active;
     boolean held;          // finger still down
     boolean releasing;
+    boolean latched;       // finger gone but the latch button keeps the note sounding
     int touchId = -1;
     int kind = PLAY;
     long startedAt;        // engine frame counter, for voice stealing
@@ -41,6 +42,7 @@ final class Voice {
 
     // tape / scratch
     double scrTarget, scrBase, scrSpan, scrVel;
+    double scrTv; int scrAge, scrDt;      // finger velocity (samples of audio per frame) and frames since the last touch update
     float scratchAmp, tapeAmp;
     double baseSpeed = 1.0;
     boolean decayOnRelease;
@@ -58,6 +60,8 @@ final class Voice {
         active = true;
         held = true;
         releasing = false;
+        latched = false;
+        scrAge = 0; scrTv = 0.0; scrDt = 0;
         stage = 0;
         decayOnRelease = false;
         scratchAmp = 0f;
@@ -68,6 +72,17 @@ final class Voice {
         touchId = id;
         startedAt = frame;
         env = 0f;
+    }
+
+    /** Scratch: the finger now points at audio position t (called when a touch update arrives). */
+    void scratchTo(double t) {
+        if (scrAge > 0 && scrAge < 6000) {
+            double v = (t - scrTarget) / scrAge;                    // speed since the previous update
+            scrTv = scrTv * 0.5 + v * 0.5;
+            scrDt = Math.min(scrAge, 2400);
+        } else { scrTv = 0.0; scrDt = 0; }
+        scrTarget = t;
+        scrAge = 0;
     }
 
     /** Moves the playhead without a click (short fade out, jump, fade in). */
@@ -258,15 +273,21 @@ final class Voice {
      * is always smooth (no zipper noise from 60 Hz touch updates). Sound only while it moves.
      */
     private float scratchSample(int len) {
-        final double w = 150.0 / engineRate;                 // spring frequency, rad per frame
-        double acc = w * w * (scrTarget - pos) - 2.0 * w * scrVel;
+        final double w = 100.0 / engineRate;                 // spring frequency, rad per frame (~16 Hz: smooth, still tight)
+        // touch updates arrive at 60-120 Hz; between them the target keeps moving at the finger's speed (for at
+        // most one update interval), so the spring sees continuous motion instead of steps = no buzzing/modulation
+        int ext = scrAge < scrDt ? scrAge : scrDt;
+        scrAge++;
+        double tgt = scrTarget + scrTv * ext;
+        if (tgt < 0) tgt = 0; else if (tgt > len - 1) tgt = len - 1;
+        double acc = w * w * (tgt - pos) - 2.0 * w * scrVel;
         scrVel += acc;
         pos += scrVel;
         if (pos < 0) { pos = 0; scrVel = 0; }
         if (pos > len - 1) { pos = len - 1; scrVel = 0; }
         float speedRel = (float) (Math.abs(scrVel) / ratio);   // 1.0 = normal playback speed
-        float gTarget = Math.min(1f, speedRel / 0.12f);
-        scratchAmp += (gTarget - scratchAmp) * 0.004f;
+        float gTarget = Math.min(1f, speedRel / 0.08f);
+        scratchAmp += (gTarget - scratchAmp) * (gTarget > scratchAmp ? 0.01f : 0.003f);   // quick open, slower close
         return sm.at(pos) * scratchAmp;
     }
 }

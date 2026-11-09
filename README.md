@@ -19,6 +19,8 @@ Para compilar localmente: `./gradlew assembleDebug` (precisa do Android SDK e JD
 |---|---|
 | 6 slots de sample | Cada slot tem até 8 vozes, 5 efeitos próprios e volume/attack/release/pan |
 | **Slicer** | 4/8/16/32 fatias ou **fatias manuais** (botão de marcador: toque cria, arraste move, toque no marcador apaga, segurar volta à grade) e **detecção automática de batidas** (estrela); altura do toque = velocity |
+| **Slicer auto/Q** | ▶ toca as fatias sozinho (🎲 embaralha); Q quantiza os toques na grade do BPM |
+| **Latch** | O som continua ao soltar o dedo e ao trocar de modo |
 | **Looper** | Dois dedos definem o loop com duração exata; **cruzar os dedos toca em reverse**; 4/8/16/32 prende os marcadores na grade; mover juntos desloca a janela |
 | **Bow** | Grão do som em loop sob o dedo (textura/pad); altura muda o tamanho do grão |
 | **Tape** | Arraste para direita acelera, esquerda inverte; soltar = tape stop |
@@ -26,8 +28,8 @@ Para compilar localmente: `./gradlew assembleDebug` (precisa do Android SDK e JD
 | **Arpeggiator** | Toque várias fatias: o padrão toca nas fatias sob os dedos, travado no BPM. Direção UP/DN/U-D/RND/ORD (botão rosa), taxa 1/4–1/32 (botão amarelo), usa o ADSR do slot |
 | **Keyboard** | 24 teclas cromáticas; ∞ sustenta; curva = legato (glide) |
 | **Loop Player** | Loop travado no BPM do projeto; toque liga/desliga (ou gate) |
-| Efeitos XY | Distortion, **Filter LP/HP** (toque de novo no ícone do filtro alterna LP/HP e o ícone muda; a curva real aparece no pad), Amp Mod, Feedback Delay sincronizado, **Reverb "cloud" (plate de Dattorro)**, cauda longa e sem metálico, decay de 0,6 a 14 s (x) e wet (y) que some por completo ao soltar; "M" aplica no master; "hold" trava o efeito ligado. Entrada e saída dos efeitos são suavizadas (sem estalos) |
-| Gravador de gestos | ● grava seus dedos por 1–128 compassos a partir do próximo compasso e repete em loop; troque o modo durante o loop para mudar como ele soa |
+| Efeitos XY | Distortion, **Filter LP/HP** (toque de novo no ícone do filtro alterna LP/HP e o ícone muda; a curva real aparece no pad), Amp Mod, Delay de 10 ms a 4 s (1 ms nas faixas curtas = filtro pente) com botão sync de BPM, **Reverb "cloud" (plate de Dattorro)**, cauda longa e sem metálico, decay de 0,6 a 14 s (x) e wet (y) que some por completo ao soltar; "M" aplica no master; "hold" trava o efeito ligado. Entrada e saída dos efeitos são suavizadas (sem estalos) |
+| Gravador de gestos | ● arma a gravação: começa no primeiro toque (waveform ou pad de efeito), 1–128 compassos, repete em loop e é salvo no projeto; troque o modo durante o loop para mudar como ele soa |
 | Resample | Botão de círculos duplos grava o mix final num slot; microfone grava no slot |
 | Importar | WAV, AIFF (direto) e MP3/M4A/OGG/FLAC (decodificador do Android) |
 | Projetos | Menu **Gf** → salvar/abrir (samples + parâmetros) |

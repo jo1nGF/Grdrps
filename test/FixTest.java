@@ -459,6 +459,242 @@ public class FixTest {
                 check(pk < 14, String.format("Reverb x=%.1f picos espectrais %.2f dB < 14", x, pk));
             }
         }
+        System.out.println("== Latch");
+        {
+            for (int md : new int[]{Slot.SLICER, Slot.BOW, Slot.TAPE, Slot.KEYBOARD}) {
+                final Slot sl = new Slot(R);
+                float[] flat = new float[R * 8]; java.util.Arrays.fill(flat, 0.5f);
+                sl.setSample(new Sample(flat, R, "flat"), 120);
+                sl.mode = md; sl.div = 4; sl.infinite = true; sl.release = 0.05f; sl.latch = true;
+                final int mm = md;
+                float[] o = renderSlot(sl, 3.0, 120, b -> {
+                    if (b == 0) sl.handle(0, 0, 0.3f, 0.2f, 0, 0);
+                    if (b == 20) sl.handle(2, 0, 0.3f, 0.2f, 20L * 256, 0);
+                    if (b == 60) sl.mode = (mm == Slot.BOW ? Slot.KEYBOARD : Slot.BOW);       // switching play mode keeps it sounding
+                });
+                float after = rms(o, (int) (2.5 * R), (int) (2.9 * R));
+                check(after > 0.05f, "Latch mantém o som após soltar e trocar de modo (modo " + md + ", rms " + after + ")");
+                // novo gesto troca o som latched
+                final Slot s2 = new Slot(R);
+                s2.setSample(new Sample(flat, R, "flat"), 120);
+                s2.mode = md; s2.div = 4; s2.infinite = true; s2.release = 0.05f; s2.latch = true;
+                float[] o2 = renderSlot(s2, 2.0, 120, b -> {
+                    if (b == 0) s2.handle(0, 0, 0.3f, 0.2f, 0, 0);
+                    if (b == 10) s2.handle(2, 0, 0.3f, 0.2f, 0, 0);
+                    if (b == 150) s2.applyLatch(false);                                    // latch off = release
+                });
+                check(rms(o2, (int) (0.5 * R), (int) (0.6 * R)) > 0.05f && rms(o2, (int) (1.8 * R), (int) (1.95 * R)) < 0.005f,
+                      "Latch desligado solta o som (modo " + md + ")");
+            }
+            // sem latch: soltar corta
+            final Slot nl = new Slot(R);
+            float[] flat = new float[R * 8]; java.util.Arrays.fill(flat, 0.5f);
+            nl.setSample(new Sample(flat, R, "flat"), 120);
+            nl.mode = Slot.SLICER; nl.div = 4; nl.infinite = true; nl.release = 0.05f;
+            float[] o3 = renderSlot(nl, 2.0, 120, b -> { if (b == 0) nl.handle(0, 0, 0.3f, 0.2f, 0, 0); if (b == 20) nl.handle(2, 0, 0.3f, 0.2f, 0, 0); });
+            check(rms(o3, (int) (1.5 * R), (int) (1.9 * R)) < 0.005f, "Sem latch o som termina ao soltar");
+            // Looper: fadeAll (stop) e soltar o dedo nao pode dar excecao
+            final Slot lp = new Slot(R);
+            lp.setSample(new Sample(flat, R, "flat"), 120);
+            lp.mode = Slot.LOOPER;
+            boolean threw = false;
+            try {
+                lp.handle(0, 0, 0.2f, 0.5f, 0, 0); lp.handle(0, 1, 0.6f, 0.5f, 0, 0);
+                renderSlot(lp, 0.1, 120, null);
+                lp.fadeAll();
+                lp.handle(2, 0, 0, 0, 0, 0); lp.handle(2, 1, 0, 0, 0, 0);
+                renderSlot(lp, 0.1, 120, null);
+            } catch (RuntimeException ex) { threw = true; }
+            check(!threw, "Looper: soltar dedos depois de Stop não dá exceção");
+        }
+        System.out.println("== Quantizar / Slicer auto-play");
+        {
+            float[] d = new float[R * 4];
+            for (int i = 0; i < d.length; i++) d[i] = 0.1f * (1 + Math.min(7, i * 8 / d.length));
+            // quantizar: toque fora da grade comeca exatamente na proxima subdivisao (1/8 a 120bpm = 0.25 s)
+            final Slot q = new Slot(R);
+            q.setSample(new Sample(d, R, "ramp"), 120);
+            q.mode = Slot.SLICER; q.div = 8; q.quantize = true; q.arpRate = 8; q.attack = 0f; q.release = 0.02f;
+            float[] o = renderSlot(q, 1.5, 120, b -> { if (b == 130) q.handle(0, 0, 0.3f, 0f, 130L * 256, 0); });   // t = 0.693 s
+            int first = -1;
+            for (int i = 0; i < o.length; i++) if (Math.abs(o[i]) > 0.01f) { first = i; break; }
+            double t0 = first / (double) R;
+            System.out.println("     toque em 0.693 s, nota começou em " + t0 + " s");
+            check(t0 >= 0.74 && t0 <= 0.76, "Quantizar: nota começa na próxima subdivisão da grade (0.75 s)");
+            // sem quantizar começa na hora
+            final Slot nq = new Slot(R);
+            nq.setSample(new Sample(d, R, "ramp"), 120);
+            nq.mode = Slot.SLICER; nq.div = 8; nq.attack = 0f;
+            float[] o2 = renderSlot(nq, 1.5, 120, b -> { if (b == 130) nq.handle(0, 0, 0.3f, 0f, 130L * 256, 0); });
+            int f2 = -1; for (int i = 0; i < o2.length; i++) if (Math.abs(o2[i]) > 0.01f) { f2 = i; break; }
+            check(f2 / (double) R < 0.71, "Sem quantizar a nota começa no toque");
+            // dedo levantado antes do disparo ainda toca
+            final Slot q2 = new Slot(R);
+            q2.setSample(new Sample(d, R, "ramp"), 120);
+            q2.mode = Slot.SLICER; q2.div = 8; q2.quantize = true; q2.arpRate = 8; q2.release = 0.02f;
+            float[] o3 = renderSlot(q2, 1.5, 120, b -> { if (b == 130) q2.handle(0, 0, 0.3f, 0f, 0, 0); if (b == 135) q2.handle(2, 0, 0.3f, 0f, 0, 0); });
+            check(rms(o3, (int) (0.78 * R), (int) (0.9 * R)) > 0.03f, "Quantizar: toque curto (soltou antes da grade) ainda dispara");
+
+            // auto-play: fatias em ordem, uma por passo (1/8 = 0.25 s), travado na grade
+            final Slot ap = new Slot(R);
+            ap.setSample(new Sample(d, R, "ramp"), 120);
+            ap.mode = Slot.SLICER; ap.div = 8; ap.arpRate = 8; ap.attack = 0f; ap.release = 0.01f; ap.decay = 0.05f;
+            final Slot cal = new Slot(R);
+            cal.setSample(new Sample(d, R, "ramp"), 120); cal.mode = Slot.SLICER; cal.div = 8; cal.attack = 0f;
+            float[] co = renderSlot(cal, 0.4, 120, b -> { if (b == 0) cal.handle(0, 0, 0.95f, 0f, 0, 0); });
+            final float gain = rms(co, (int) (0.2 * R), (int) (0.3 * R)) / 0.8f;
+            ap.autoPlay = true;
+            float[] ao = renderSlot(ap, 4.2, 120, null);
+            StringBuilder seq = new StringBuilder(); java.util.ArrayList<Integer> got = new java.util.ArrayList<>();
+            for (int st = 1; st < 14; st++) {
+                int c = (int) ((st * 0.25 + 0.12) * R);
+                float lv = rms(ao, c - 150, c + 150);
+                int sli = Math.round(lv / (gain * 0.09f)) - 1;
+                got.add(sli); seq.append(sli).append(' ');
+            }
+            System.out.println("     auto: " + seq);
+            boolean ord = true;
+            for (int i = 1; i < got.size(); i++) if (got.get(i) != (got.get(i - 1) + 1) % 8) ord = false;
+            check(ord, "Slicer auto-play percorre as fatias da esquerda para a direita");
+            // shuffle: sem repetir a mesma fatia em seguida, e usa varias fatias
+            final Slot sh = new Slot(R);
+            sh.setSample(new Sample(d, R, "ramp"), 120);
+            sh.mode = Slot.SLICER; sh.div = 8; sh.arpRate = 8; sh.attack = 0f; sh.release = 0.01f; sh.decay = 0.05f; sh.autoPlay = true; sh.shuffle = true;
+            float[] so = renderSlot(sh, 6.0, 120, null);
+            java.util.ArrayList<Integer> sg = new java.util.ArrayList<>();
+            for (int st = 1; st < 22; st++) { int c = (int) ((st * 0.25 + 0.12) * R); sg.add(Math.round(rms(so, c - 150, c + 150) / (gain * 0.09f)) - 1); }
+            boolean norep = true; java.util.HashSet<Integer> uniq = new java.util.HashSet<>(sg);
+            for (int i = 1; i < sg.size(); i++) if (sg.get(i).equals(sg.get(i - 1))) norep = false;
+            check(norep && uniq.size() >= 4, "Shuffle: ordem aleatória sem repetir em seguida (" + uniq.size() + " fatias diferentes)");
+            // trocar o numero de fatias durante o arp nao pode lancar excecao
+            final Slot ar = new Slot(R);
+            ar.setSample(new Sample(d, R, "ramp"), 120);
+            ar.mode = Slot.ARP; ar.div = 32; ar.arpRate = 16;
+            boolean threw = false;
+            try {
+                renderSlot(ar, 1.5, 120, b -> {
+                    if (b == 0) { ar.handle(0, 0, 0.95f, 0.1f, 0, 0); ar.handle(0, 1, 0.5f, 0.1f, 0, 0); }
+                    if (b == 40) ar.div = 4;
+                    if (b == 80) ar.markers = Slot.cleanMarkers(new float[]{0.2f});
+                    if (b == 120) ar.markers = null;
+                    if (b == 160) ar.div = 16;
+                });
+            } catch (RuntimeException ex) { threw = true; ex.printStackTrace(); }
+            check(!threw, "Arp: mudar a quantidade de fatias durante o jogo não dá exceção");
+            check(ar.arpSlice <= 31, "Arp: fatia indicada é válida");
+        }
+        System.out.println("== Loop player, gestos, FX");
+        {
+            Engine eng = new Engine(R);
+            float[] flat = new float[R * 2]; java.util.Arrays.fill(flat, 0.4f);
+            eng.slots[0].setSample(new Sample(flat, R, "flat"), 120);
+            eng.slots[0].mode = Slot.LOOPPLAYER;
+            eng.playing = false;                                                // transporte parado
+            short[] pcm = new short[256 * 2];
+            for (int i = 0; i < 8; i++) eng.process(pcm, 256);
+            eng.touch(0, 0, 0, 0.5f, 0.5f); eng.touch(0, 2, 0, 0.5f, 0.5f);       // primeiro toque
+            double e = 0;
+            for (int i = 0; i < 40; i++) { eng.process(pcm, 256); for (short v : pcm) e += Math.abs(v); }
+            check(eng.playing && e > 1000, "Loop player toca já no primeiro toque (transporte parado antes)");
+
+            // gestos: grava no 1o toque, inclui FX, e repete
+            Engine g = new Engine(R);
+            g.slots[1].mode = Slot.SLICER;
+            g.bpm = 240;                                                      // 1 compasso = 1 s
+            g.armGestures(1, 1);
+            for (int i = 0; i < 20; i++) g.process(pcm, 256);                  // sem toque: nada acontece
+            check(g.slots[1].gestures.state == GestureRecorder.ARMED, "Gestos: aguardando o primeiro toque");
+            g.touch(1, 0, 0, 0.3f, 0.2f);
+            g.process(pcm, 256);
+            check(g.slots[1].gestures.state == GestureRecorder.RECORDING, "Gestos: gravação começa no primeiro toque na waveform");
+            g.touch(1, 2, 0, 0, 0);
+            for (int i = 0; i < 20; i++) g.process(pcm, 256);
+            g.fxTouch(1, 3, Fx.FILTER, 0.2f, 0.7f);                            // toque no pad de efeito durante a gravação
+            for (int i = 0; i < 10; i++) g.process(pcm, 256);
+            g.fxTouch(1, 4, Fx.FILTER, 0.4f, 0.7f);
+            g.process(pcm, 256);
+            g.fxTouch(1, 5, Fx.FILTER, 0, 0);
+            for (int i = 0; i < 400 && g.slots[1].gestures.state == GestureRecorder.RECORDING; i++) g.process(pcm, 256);
+            GestureRecorder gr = g.slots[1].gestures;
+            check(gr.state == GestureRecorder.PLAYING, "Gestos: terminou a gravação e está repetindo");
+            int fxEv = 0; for (int i = 0; i < gr.eventCount(); i++) if (gr.typeAt(i) >= 3) fxEv++;
+            check(fxEv == 3, "Gestos: movimentos do pad de efeito foram gravados (" + fxEv + " eventos)");
+            // replay aciona o filtro
+            boolean sawActive = false;
+            for (int i = 0; i < 400; i++) { g.process(pcm, 256); if (g.slots[1].fx[Fx.FILTER].active) sawActive = true; }
+            check(sawActive, "Gestos: o replay liga o efeito do pad");
+            // salvar / carregar
+            int n = gr.eventCount();
+            double[] ph = new double[n]; int[] ty = new int[n], idd = new int[n]; float[] xx = new float[n], yy = new float[n];
+            for (int i = 0; i < n; i++) { ph[i] = gr.phaseAt(i); ty[i] = gr.typeAt(i); idd[i] = gr.idAt(i); xx[i] = gr.xAt(i); yy[i] = gr.yAt(i); }
+            Engine h = new Engine(R);
+            h.setGestures(2, gr.bars(), ph, ty, idd, xx, yy);
+            h.process(pcm, 256);
+            check(h.slots[2].gestures.state == GestureRecorder.PLAYING && h.slots[2].gestures.eventCount() == n, "Gestos: projeto carregado volta tocando (" + n + " eventos)");
+        }
+        System.out.println("== Delay 10 ms .. 4 s");
+        {
+            check(Fx.Delay.msForX(0) == 10 && Fx.Delay.msForX(1) == 4000, "Delay: alcance 10 ms a 4000 ms");
+            boolean step1 = true;
+            for (double x = 0; x < 0.2; x += 0.0005) { double a1 = Fx.Delay.msForX(x), a2 = Fx.Delay.msForX(x + 0.0005); if (a2 - a1 > 1.0 || a1 != Math.rint(a1)) step1 = false; }
+            check(step1, "Delay: faixa curta varia de 1 em 1 ms (valores inteiros)");
+            // comb filter: 10 ms com feedback alto => picos a cada 100 Hz
+            Fx.Effect dl = Fx.create(Fx.DELAY, R); dl.x = 0f; dl.y = 0.9f; dl.active = true;
+            float[] in = noise(R * 2, 0.3f, 7);
+            float[] out = runFx(dl, in, 120);
+            double[] spec = new double[R / 2 + 1];
+            int N = 16384; int st0 = R;       // 16384-point DFT at selected bins
+            double pk = 0, vl = 0;
+            for (int rep = 0; rep < 2; rep++) {
+                double f = rep == 0 ? 100.0 : 150.0;       // pico (100 Hz) vs vale (150 Hz)
+                double re = 0, im = 0;
+                for (int i = 0; i < N; i++) { double w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N); re += out[st0 + i] * w * Math.cos(2 * Math.PI * f * i / R); im -= out[st0 + i] * w * Math.sin(2 * Math.PI * f * i / R); }
+                if (rep == 0) pk = Math.hypot(re, im); else vl = Math.hypot(re, im);
+            }
+            check(pk > 3 * vl, String.format("Delay 10 ms: efeito de filtro pente (pico 100 Hz %.1f x vale 150 Hz %.1f)", pk, vl));
+            // 4 s: o eco chega depois de ~4 s
+            Fx.Effect d4 = Fx.create(Fx.DELAY, R); d4.x = 1f; d4.y = 0.2f; d4.active = true;
+            float[] imp = new float[R * 6]; imp[100] = 0.8f;
+            float[] o4 = runFx(d4, imp, 120);
+            int pkAt = 0; float pv = 0;
+            for (int i = R; i < o4.length; i++) if (Math.abs(o4[i]) > pv) { pv = Math.abs(o4[i]); pkAt = i; }
+            check(Math.abs(pkAt / (double) R - 4.0) < 0.03, "Delay: tempo máximo = 4 s (eco em " + pkAt / (double) R + " s)");
+            // sync: x escolhe nota; 1/8 a 120 bpm = 250 ms
+            Fx.Delay sd = (Fx.Delay) Fx.create(Fx.DELAY, R); sd.sync = true; sd.x = 4.5f / 11f; sd.y = 0.2f; sd.active = true;
+            runFx(sd, new float[1024], 120);
+            check(Math.abs(sd.shownMs - 250f) < 1f, "Delay sync: 1/8 a 120 bpm = 250 ms (" + sd.shownMs + ")");
+            runFx(sd, new float[1024], 90);
+            check(Math.abs(sd.shownMs - 333.3f) < 1f, "Delay sync acompanha o BPM (90 bpm -> " + sd.shownMs + " ms)");
+        }
+        System.out.println("== Scratch fluido (toque a 60 Hz)");
+        {
+            final Slot sc = new Slot(R);
+            sc.setSample(new Sample(sine(220, R * 4, 0.6f), R, "sine"), 120);
+            sc.mode = Slot.SCRATCH; sc.attack = 0f; sc.release = 0.02f;
+            // dedo faz vai-e-vem senoidal 2 Hz, atualizando a 60 Hz (a cada ~13 blocos de 256 = 3 eventos/... )
+            final int per = (int) Math.round(R / 60.0 / 256.0 * 256.0);        // frames entre toques
+            float[] o = renderSlot(sc, 3.0, 120, b -> {
+                if (b == 0) sc.handle(0, 0, 0.5f, 0.3f, 0, 0);
+                else if ((b % 3) == 0) { double t = b * 256.0 / R; sc.handle(1, 0, (float) (0.5 + 0.12 * Math.sin(2 * Math.PI * 2.0 * t)), 0.3f, (long) b * 256, 0); }
+            });
+            float mx = 0, rough = 0; int cnt = 0;
+            for (int i = (int) (0.3 * R) + 1; i < o.length; i++) {
+                float dd = Math.abs(o[i] - o[i - 1]); if (dd > mx) mx = dd;
+            }
+            // clique = salto de amostra muito acima do que a senoide gera na velocidade maxima (<~ 2x)
+            check(mx < 0.35f, "Scratch a 60 Hz: sem estalos (maior salto entre amostras " + mx + ")");
+            // modulacao: o envelope (janelas de 2 ms) nao pode ter uma linha forte em 60 Hz (a taxa dos toques)
+            int w2 = 96; int ne = o.length / w2; double[] env = new double[ne]; double mean = 0;
+            for (int i = 0; i < ne; i++) { double acc = 0; for (int j = 0; j < w2; j++) acc += Math.abs(o[i * w2 + j]); env[i] = acc / w2; }
+            int i0 = (int) (0.5 * R / w2); int cntE = ne - i0;
+            for (int i = i0; i < ne; i++) mean += env[i];
+            mean /= cntE;
+            double fe = R / (double) w2, re = 0, im = 0;
+            for (int i = i0; i < ne; i++) { double ph = 2 * Math.PI * 60.0 * (i - i0) / fe; re += (env[i] - mean) * Math.cos(ph); im += (env[i] - mean) * Math.sin(ph); }
+            double line60 = 2 * Math.hypot(re, im) / cntE / mean;
+            System.out.println("     linha de 60 Hz no envelope: " + line60);
+            check(line60 < 0.06, "Scratch a 60 Hz: sem modulação de 60 Hz no volume (" + line60 + ")");
+        }
         System.out.println(fails == 0 ? "\nTODOS OS TESTES PASSARAM" : "\nFALHAS: " + fails);
         System.exit(fails == 0 ? 0 : 1);
     }

@@ -127,25 +127,46 @@ public final class Fx {
         }
     }
 
-    /** Ping-pong feedback delay. x = time (note division synced to tempo), y = feedback. */
+    /** Feedback delay. x = time (10 ms..4 s in whole ms, or a tempo-synced note length with sync), y = feedback. Short times make comb filters; long times ping-pong. */
     public static final class Delay extends Effect {
-        private static final double[] DIV = {0.125, 0.1875, 0.25, 0.375, 0.5, 0.75, 1.0};
+        public static final double MIN_MS = 10.0, MAX_MS = 4000.0;
+        /** Note lengths in beats for sync mode (1/32 .. 1 bar, straight and dotted). */
+        public static final double[] DIV = {0.125, 0.1875, 0.25, 0.375, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0};
+        public static final String[] DIV_NAMES = {"1/32", "1/32.", "1/16", "1/16.", "1/8", "1/8.", "1/4", "1/4.", "1/2", "1/2.", "1 bar"};
+        /** true = x picks a note length locked to the project tempo; false = x is free time in milliseconds. */
+        public volatile boolean sync = false;
+        /** Delay time currently used, in ms (for the UI). */
+        public volatile float shownMs = 250f;
         private final float[] bl, br;
         private int w;
         private float cur;
         public Delay(int rate) {
             super(rate);
-            bl = new float[rate * 3];
-            br = new float[rate * 3];
+            int len = (int) (rate * (MAX_MS / 1000.0)) + 64;
+            bl = new float[len];
+            br = new float[len];
         }
+        /** x (0..1) to milliseconds: exponential 10 ms .. 4000 ms, whole milliseconds (1 ms steps on the short side). */
+        public static double msForX(double x) {
+            double ms = MIN_MS * Math.pow(MAX_MS / MIN_MS, Math.max(0.0, Math.min(1.0, x)));
+            return Math.round(ms);
+        }
+        public static int divIndex(double x) { return Math.min(DIV.length - 1, (int) (Math.max(0.0, x) * DIV.length)); }
+
         @Override public void process(float[] l, float[] r, int n, double bpm) {
-            int idx = Math.min(DIV.length - 1, (int) (x * DIV.length));
-            double secs = DIV[idx] * 60.0 / Math.max(30.0, bpm);
-            float target = (float) Math.min(secs * rate, bl.length - 2);
+            double ms;
+            if (sync) ms = DIV[divIndex(x)] * 60000.0 / Math.max(30.0, bpm);
+            else ms = msForX(x);
+            ms = Math.max(MIN_MS, Math.min(MAX_MS, ms));
+            shownMs = (float) ms;
+            float target = (float) Math.min(ms * 0.001 * rate, bl.length - 3);
             if (cur == 0f) cur = target;
-            float fb = (0.1f + 0.82f * y) * (active ? 1f : 0.55f);
+            final float slew = 0.0012f;                         // time changes glide (tape-style), never click
+            // short times: straight feedback = a comb filter / metallic echo; longer times: ping-pong between L and R
+            final float pp = (float) Math.max(0.0, Math.min(1.0, (ms - 60.0) / 90.0));
+            float fb = (0.1f + 0.85f * y) * (active ? 1f : 0.55f);
             for (int i = 0; i < n; i++) {
-                cur += (target - cur) * 0.0005f;
+                cur += (target - cur) * slew;
                 float rp = w - cur;
                 while (rp < 0) rp += bl.length;
                 int i0 = (int) rp;
@@ -155,8 +176,8 @@ public final class Fx {
                 float dr = br[i0] + (br[i1] - br[i0]) * f;
                 float inL = active ? l[i] : 0f;
                 float inR = active ? r[i] : 0f;
-                bl[w] = clip(inL + dr * fb);
-                br[w] = clip(inR + dl * fb);
+                bl[w] = clip(inL + (dl * (1f - pp) + dr * pp) * fb);
+                br[w] = clip(inR + (dr * (1f - pp) + dl * pp) * fb);
                 if (++w >= bl.length) w = 0;
                 l[i] += dl * 0.8f;
                 r[i] += dr * 0.8f;

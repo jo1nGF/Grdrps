@@ -14,6 +14,8 @@ public final class Engine {
     public volatile double bpm = 120.0;
     public volatile float masterVolume = 0.8f;
     public volatile boolean playing = true, metronome = false;
+    /** FX pad hold: when set, letting go of the pad leaves the effect running. */
+    public volatile boolean fxHold = false;
     public volatile float peakL, peakR;
     public volatile double beat;   // current beat position (UI display)
 
@@ -84,12 +86,41 @@ public final class Engine {
 
     public void setMode(int slot, int mode) { slots[slot].mode = mode; }
 
+    /** Latch on/off for one slot (applied on the audio thread). */
+    public void setLatch(int slot, boolean on) { post(() -> slots[slot].applyLatch(on)); }
+
+    /**
+     * XY pad touch (also recorded by the gesture recorder). type 3 = down, 4 = move, 5 = up.
+     * fxId = effect index, +16 when the pad is editing the master bus.
+     */
+    public void fxTouch(int slot, int type, int fxId, float x, float y) { touch(slot, type, fxId, x, y); }
+
+    private void applyFx(int slot, int type, int fxId, float x, float y) {
+        int idx = fxId & 15;
+        if (idx >= Fx.COUNT) return;
+        Fx.Effect ef = (fxId & 16) != 0 ? master[idx] : slots[slot].fx[idx];
+        if (type == 5) { if (!fxHold) ef.active = false; return; }
+        ef.setXY(x, y);
+        ef.active = true;
+    }
+
+    /** Arms the recorder: it starts by itself at the first touch (waveform or effect pad) and runs for `bars`. */
     public void armGestures(int slot, int bars) {
         post(() -> slots[slot].gestures.arm(beatAcc, bars));
     }
 
     public void clearGestures(int slot) {
-        post(() -> slots[slot].gestures.clear((t, id, x, y) -> slots[slot].handle(t, id, x, y, frame, beatAcc)));
+        post(() -> slots[slot].gestures.clear((t, id, x, y) -> emitGesture(slot, t, id, x, y)));
+    }
+
+    private void emitGesture(int slot, int t, int id, float x, float y) {
+        if (t >= 3) applyFx(slot, t, id - GestureRecorder.ID_OFFSET, x, y);
+        else slots[slot].handle(t, id, x, y, frame, beatAcc);
+    }
+
+    /** Replaces the recorded gestures of a slot (project load). */
+    public void setGestures(int slot, int bars, double[] phase, int[] type, int[] id, float[] x, float[] y) {
+        post(() -> slots[slot].gestures.load(bars, phase, type, id, x, y));
     }
 
     /** Starts capturing the external input or the final mix into a growing buffer. */
@@ -169,15 +200,19 @@ public final class Engine {
         // gesture playback
         for (int i = 0; i < SLOTS; i++) {
             final Slot s = slots[i];
-            s.gestures.update(beatNow, playing, (t, id, x, y) -> s.handle(t, id, x, y, frame, beatNow));
+            final int si = i;
+            s.gestures.update(beatNow, playing, (t, id, x, y) -> emitGesture(si, t, id, x, y));
         }
         // live touches
         Ev e;
         while ((e = events.poll()) != null) {
             Slot s = slots[e.slot];
-            s.handle(e.type, e.id, e.x, e.y, frame, beatNow);
+            if (s.gestures.state == GestureRecorder.ARMED && e.type != 2 && e.type != 5) playing = true;   // first touch starts the take (and the clock)
+            if (e.type >= 3) applyFx(e.slot, e.type, e.id, e.x, e.y);
+            else s.handle(e.type, e.id, e.x, e.y, frame, beatNow);
             s.gestures.add(e.type, e.id, e.x, e.y, beatNow);
         }
+        for (int i = 0; i < SLOTS; i++) if (slots[i].requestTransport) { slots[i].requestTransport = false; playing = true; }
         java.util.Arrays.fill(mixL, 0, n, 0f);
         java.util.Arrays.fill(mixR, 0, n, 0f);
         boolean anySolo = false;

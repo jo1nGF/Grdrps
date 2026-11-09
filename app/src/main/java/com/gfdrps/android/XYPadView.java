@@ -21,6 +21,7 @@ public final class XYPadView extends View {
     private int slot, fxIndex;
     private boolean master, latch, touching;
     private float tx = 0.5f, ty = 0.5f;
+    private int downFx, downSlot;
 
     public XYPadView(Context c, Engine e) {
         super(c);
@@ -37,6 +38,7 @@ public final class XYPadView extends View {
 
     public void setLatch(boolean l) {
         latch = l;
+        engine.fxHold = l;
         if (!l && !touching) effect().active = false;
         invalidate();
     }
@@ -49,15 +51,15 @@ public final class XYPadView extends View {
         int a = e.getActionMasked();
         if (a == MotionEvent.ACTION_DOWN) getParent().requestDisallowInterceptTouchEvent(true);
         if (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_MOVE) {
-            touching = true;
+            if (a == MotionEvent.ACTION_DOWN && android.os.Build.VERSION.SDK_INT >= 26) requestUnbufferedDispatch(e);
             tx = Math.max(0f, Math.min(1f, e.getX() / Math.max(1, getWidth())));
             ty = Math.max(0f, Math.min(1f, 1f - e.getY() / Math.max(1, getHeight())));
-            Fx.Effect ef = effect();
-            ef.setXY(tx, ty);
-            ef.active = true;
+            // goes through the engine so the gesture recorder sees the pad too (id = fx index, +16 for master)
+            engine.fxTouch(slot, a == MotionEvent.ACTION_DOWN ? 3 : 4, fxIndex + (master ? 16 : 0), tx, ty);
+            touching = true; downFx = fxIndex + (master ? 16 : 0); downSlot = slot;
         } else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
             touching = false;
-            if (!latch) effect().active = false;
+            engine.fxTouch(downSlot, 5, downFx, 0f, 0f);
         }
         invalidate();
         return true;
@@ -106,6 +108,11 @@ public final class XYPadView extends View {
         p.setColor(0x99FFFFFF);
         p.setTextSize(Math.min(w, h) * 0.075f);
         String extra = fxIndex == Fx.FILTER ? (((Fx.Filter) ef).highPass ? " · HIGH-PASS" : " · LOW-PASS") : "";
+        if (fxIndex == Fx.DELAY) {
+            Fx.Delay d = (Fx.Delay) ef;
+            int ms = Math.round(d.sync ? d.shownMs : (float) Fx.Delay.msForX(ef.x));
+            extra = " · " + (d.sync ? Fx.Delay.DIV_NAMES[Fx.Delay.divIndex(ef.x)] + " SYNC · " : "") + (ms >= 1000 ? String.format(java.util.Locale.US, "%.2f s", ms / 1000f) : ms + " ms");
+        }
         c.drawText((master ? "MASTER · " : "") + Fx.NAMES[fxIndex] + extra + (latch ? "  (hold)" : ""), w * 0.03f, h * 0.1f, p);
     }
 
@@ -125,7 +132,7 @@ public final class XYPadView extends View {
             }
             case Fx.DIST: return (float) Math.tanh((x * 6f) - 2f) * 0.5f + 0.5f;
             case Fx.AMP: return 0.5f + 0.4f * (float) Math.sin(x * (3f + tx * 20f) * Math.PI) * ty;
-            case Fx.DELAY: return (float) Math.pow(0.5f + 0.4f * ty, x * 6f);
+            case Fx.DELAY: return (float) Math.pow(0.5f + 0.4f * ty, x * 6f);   // echoes fading with time
             default: return (float) Math.exp(-x * (5f - tx * 4f)) * (0.3f + 0.7f * ty);
         }
     }

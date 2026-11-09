@@ -20,7 +20,8 @@ import java.nio.ByteOrder;
 
 /** Imports WAV/AIFF directly; anything else the phone can decode (MP3, M4A, OGG, FLAC) goes through MediaCodec. */
 public final class SampleLoader {
-    private static final int MAX_SECONDS = 120;
+    private static final int MAX_SECONDS = 240;          // longer files are cut here (keeps memory safe)
+    private static final long MAX_DIRECT_BYTES = 96L * 1024 * 1024;
     private SampleLoader() {}
 
     public static String displayName(Context c, Uri uri) {
@@ -39,6 +40,11 @@ public final class SampleLoader {
 
     public static Sample load(Context c, Uri uri) throws IOException {
         String name = displayName(c, uri);
+        long size = -1;
+        try (android.content.res.AssetFileDescriptor fd = c.getContentResolver().openAssetFileDescriptor(uri, "r")) {
+            if (fd != null) size = fd.getLength();
+        } catch (Exception ignored) { }
+        if (size > MAX_DIRECT_BYTES) return decode(c, uri, name);        // big files are streamed through the codec, never held whole in memory
         byte[] bytes = readAll(c.getContentResolver(), uri);
         if (bytes.length > 12) {
             String tag = new String(bytes, 0, 4, "US-ASCII");
@@ -57,7 +63,7 @@ public final class SampleLoader {
             int n;
             while ((n = in.read(buf)) > 0) {
                 out.write(buf, 0, n);
-                if (out.size() > 200 * 1024 * 1024) throw new IOException("Arquivo muito grande");
+                if (out.size() > MAX_DIRECT_BYTES) throw new IOException("Arquivo muito grande");
             }
             return out.toByteArray();
         }
@@ -83,7 +89,9 @@ public final class SampleLoader {
 
             int rate = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE);
             int ch = fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
-            float[] data = new float[rate * 10];
+            long durUs = fmt.containsKey(MediaFormat.KEY_DURATION) ? fmt.getLong(MediaFormat.KEY_DURATION) : 0;
+            int guess = durUs > 0 ? (int) Math.min((long) rate * MAX_SECONDS, durUs * rate / 1_000_000L + rate) : rate * 10;
+            float[] data = new float[Math.max(rate, guess)];
             int len = 0;
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
             boolean inDone = false, outDone = false;
@@ -109,8 +117,9 @@ public final class SampleLoader {
                     java.nio.ShortBuffer sb = ob.asShortBuffer();
                     int frames = sb.remaining() / Math.max(1, ch);
                     if (len + frames > data.length) {
-                        if (len + frames > rate * MAX_SECONDS) { frames = Math.max(0, rate * MAX_SECONDS - len); outDone = true; inDone = true; }
-                        else data = java.util.Arrays.copyOf(data, Math.max(data.length * 2, len + frames));
+                        int cap = rate * MAX_SECONDS;
+                        if (len + frames > cap) { frames = Math.max(0, cap - len); outDone = true; inDone = true; }
+                        if (len + frames > data.length) data = java.util.Arrays.copyOf(data, Math.min(cap, Math.max(data.length + data.length / 2, len + frames)));
                     }
                     for (int i = 0; i < frames; i++) {
                         float sum = 0;

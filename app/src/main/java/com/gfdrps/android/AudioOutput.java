@@ -16,6 +16,7 @@ public final class AudioOutput {
     private final int chunkFrames;
     private volatile boolean running;
     private Thread thread;
+    private final int burst;
 
     /** Output rate the device prefers (48000 on Galaxy S10). */
     public static int preferredRate(Context c) {
@@ -38,6 +39,7 @@ public final class AudioOutput {
             if (f != null) framesPerBuf = Math.max(64, Integer.parseInt(f));
         } catch (Exception ignored) { }
         chunkFrames = framesPerBuf;
+        burst = framesPerBuf;
         int bufBytes = Math.max(minBytes, framesPerBuf * 4 * 2);
         track = new AudioTrack.Builder()
                 .setAudioAttributes(new AudioAttributes.Builder()
@@ -51,6 +53,7 @@ public final class AudioOutput {
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                 .build();
+        try { track.setBufferSizeInFrames(burst * 2); } catch (Exception ignored) { }   // smallest buffer that is stable; grows on underruns
     }
 
     public void start() {
@@ -60,9 +63,23 @@ public final class AudioOutput {
         thread = new Thread(() -> {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO);
             short[] buf = new short[chunkFrames * 2];
+            int lastUnderruns = 0, bufFrames = burst * 2, check = 0;
             while (running) {
-                engine.process(buf, chunkFrames);
-                track.write(buf, 0, buf.length);
+                try {
+                    engine.process(buf, chunkFrames);
+                } catch (Throwable t) {                 // never let an audio bug kill the app: output silence for this chunk
+                    java.util.Arrays.fill(buf, (short) 0);
+                }
+                int w = track.write(buf, 0, buf.length);
+                if (w < 0) break;
+                if (++check >= 64) {                    // adaptive latency: add one burst after an underrun, up to 6 bursts
+                    check = 0;
+                    try {
+                        int u = track.getUnderrunCount();
+                        if (u > lastUnderruns && bufFrames < burst * 6) { bufFrames += burst; track.setBufferSizeInFrames(bufFrames); }
+                        lastUnderruns = u;
+                    } catch (Exception ignored) { }
+                }
             }
         }, "gfdrps-audio");
         thread.start();

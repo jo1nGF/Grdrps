@@ -117,6 +117,7 @@ public final class WaveView extends View {
         if (editSlices && engine.slots[slotIndex].mode == Slot.SLICER) return editTouch(e);
         float w = Math.max(1, getWidth()), h = Math.max(1, getHeight());
         int act = e.getActionMasked();
+        if (act == MotionEvent.ACTION_DOWN && android.os.Build.VERSION.SDK_INT >= 26) requestUnbufferedDispatch(e);   // touch samples delivered immediately, not batched to the frame
         switch (act) {
             case MotionEvent.ACTION_DOWN:
             case MotionEvent.ACTION_POINTER_DOWN: {
@@ -196,7 +197,7 @@ public final class WaveView extends View {
             drawSlices(c, w, h, s);
             if (s.arpFlash > 0.02f && s.arpSlice >= 0) {
                 float[] b = s.sliceBoundaries();
-                int i = s.arpSlice;
+                int i = Math.max(0, Math.min(b.length, s.arpSlice));       // the slice count may have just changed
                 float x0 = (i == 0 ? 0f : b[i - 1]) * w, x1 = (i >= b.length ? 1f : b[i]) * w;
                 p.setStyle(Paint.Style.FILL);
                 p.setColor(((int) (s.arpFlash * 110) << 24) | 0xFF4FA3);

@@ -46,7 +46,7 @@ public final class MainActivity extends Activity {
     private final Widgets.Tile[] divTiles = new Widgets.Tile[Slot.DIVS.length];
     private final Widgets.Tile[] fxTiles = new Widgets.Tile[Fx.COUNT];
     private final SlotStrip[] strips = new SlotStrip[Engine.SLOTS];
-    private Widgets.Tile revT, ctxT, edT, glideT, infT, recGestT, barsT, metroT, playT, micT, mixT, trValT, masterFxT, latchT;
+    private Widgets.Tile revT, ctxT, edT, glideT, infT, recGestT, barsT, metroT, playT, micT, mixT, trValT, masterFxT, latchT, lkT, qT, autoT, shufT, syncT;
     private Widgets.Slider volS, attS, decS, susS, relS, panS, masterS;
     private BpmView bpmView;
     private int pendingMicMode = Engine.REC_OFF;
@@ -198,8 +198,27 @@ public final class MainActivity extends Activity {
         infT = tile().icon(Theme.I_LOOPINF).accent(0xFF2FE0C8).onClick(() -> { Slot s = engine.slots[sel]; s.infinite = !s.infinite; refresh(); });
         gr.addView(infT, lp(1.2f));
         mid.addView(gr, lpv(1f));
+        // play-mode row: latch · quantize · slicer auto-play · shuffle
+        LinearLayout xr = row();
+        lkT = tile().text("latch").textScale(0.34f).accent(0xFF52D273).onClick(() -> {
+            Slot s = engine.slots[sel]; boolean on = !s.latch; engine.setLatch(sel, on); s.latch = on;
+            toast(on ? "Latch: o som continua ao soltar ou trocar de modo" : "Latch desligado");
+            refresh(); });
+        xr.addView(lkT, lp(1.3f));
+        qT = tile().text("Q").textScale(0.34f).accent(0xFFFFD23F)
+                .onClick(() -> { Slot s = engine.slots[sel]; s.quantize = !s.quantize; toast(s.quantize ? "Quantizar: toques esperam a grade (1/" + s.arpRate + ")" : "Quantizar desligado"); refresh(); })
+                .onLong(() -> { Slot s = engine.slots[sel]; int i = 0; while (i < 3 && ARP_RATES[i] != s.arpRate) i++; s.arpRate = ARP_RATES[(i + 1) % 4]; toast("Grade 1/" + s.arpRate); refresh(); });
+        xr.addView(qT, lp(1.3f));
+        autoT = tile().icon(Theme.I_PLAY).accent(0xFF3DD6FF).onClick(() -> {
+            Slot s = engine.slots[sel]; if (s.mode != Slot.SLICER) { toast("Auto-play é do modo Slicer"); return; }
+            s.autoPlay = !s.autoPlay; toast(s.autoPlay ? "Slicer auto-play: fatias da esquerda para a direita" : "Auto-play parado"); refresh(); });
+        xr.addView(autoT, lp(1f));
+        shufT = tile().icon(Theme.I_DICE).accent(0xFFFF4FA3).onClick(() -> {
+            Slot s = engine.slots[sel]; s.shuffle = !s.shuffle; toast(s.shuffle ? "Shuffle ligado" : "Shuffle desligado"); refresh(); });
+        xr.addView(shufT, lp(1f));
+        mid.addView(xr, lpv(1f));
         r3.addView(mid, lp(5.6f));
-        left.addView(r3, lpv(2f));
+        left.addView(r3, lpv(2.7f));
 
         // right: XY pad + fx column
         pad = new XYPadView(this, engine);
@@ -216,15 +235,22 @@ public final class MainActivity extends Activity {
         }
         latchT = tile().text("hold").textScale(0.3f).accent(0xFFFFFFFF).onClick(() -> { pad.setLatch(!pad.isLatch()); latchT.setOn(pad.isLatch()); });
         fxCol.addView(latchT, lpv(0.8f));
+        syncT = tile().text("sync").textScale(0.3f).accent(0xFF3DD6FF).onClick(() -> {
+            Fx.Effect ef = masterFx ? engine.master[Fx.DELAY] : engine.slots[sel].fx[Fx.DELAY];
+            Fx.Delay d = (Fx.Delay) ef; d.sync = !d.sync;
+            if (fxSel != Fx.DELAY) { fxSel = Fx.DELAY; midi.selectedFx = fxSel; pad.select(sel, fxSel, masterFx); }
+            toast(d.sync ? "Delay sincronizado com o BPM (notas 1/32 a 1 compasso)" : "Delay livre: 10 ms a 4 s");
+            refresh(); });
+        fxCol.addView(syncT, lpv(0.8f));
         masterFxT = tile().text("M").accent(0xFFFFD23F).onClick(() -> { masterFx = !masterFx; pad.select(sel, fxSel, masterFx); refresh(); });
         fxCol.addView(masterFxT, lpv(0.8f));
         right.addView(fxCol, lp(1f));
 
-        root.addView(top, lpv(5.2f));
+        root.addView(top, lpv(5.9f));
 
         // ---- waveform
         wave = new WaveView(this, engine);
-        root.addView(wave, lpv(5.3f));
+        root.addView(wave, lpv(4.6f));
 
         // ---- bottom strip
         LinearLayout strip = row();
@@ -283,6 +309,13 @@ public final class MainActivity extends Activity {
         glideT.setOn(s.legato); infT.setOn(s.infinite);
         masterFxT.setOn(masterFx);
         trValT.text((s.transpose > 0 ? "+" : "") + s.transpose);
+        lkT.setOn(s.latch);
+        boolean qOk = s.mode == Slot.SLICER || s.mode == Slot.KEYBOARD;
+        qT.text("Q 1/" + s.arpRate); qT.setOn(s.quantize && qOk); qT.setDim(!qOk);
+        autoT.setOn(s.autoPlay); autoT.setDim(s.mode != Slot.SLICER);
+        shufT.setOn(s.shuffle); shufT.setDim(s.mode != Slot.SLICER);
+        Fx.Delay dly = (Fx.Delay) (masterFx ? engine.master[Fx.DELAY] : s.fx[Fx.DELAY]);
+        syncT.setOn(dly.sync);
         volS.set(s.volume);
         attS.set((float) Math.sqrt(s.attack / 2f));
         decS.set((float) Math.sqrt(Math.max(0f, (s.decay - 0.02f) / 3f)));
@@ -356,7 +389,7 @@ public final class MainActivity extends Activity {
         Slot s = engine.slots[sel];
         if (s.gestures.state == GestureRecorder.IDLE) {
             engine.armGestures(sel, BARS[barsIdx]);
-            toast("Gravando gestos no próximo compasso (" + BARS[barsIdx] + ")");
+            toast("Gesto armado: toque na waveform ou no pad de efeito para começar (" + BARS[barsIdx] + " compassos)");
         } else engine.clearGestures(sel);
     }
 
@@ -379,8 +412,11 @@ public final class MainActivity extends Activity {
                 Sample s = SampleLoader.load(this, uri);
                 engine.loadSample(target, s);
                 ui.post(() -> { toast("Slot " + (target + 1) + ": " + s.name); refresh(); });
-            } catch (Exception e) {
-                ui.post(() -> toast("Erro: " + e.getMessage()));
+            } catch (OutOfMemoryError oom) {
+                ui.post(() -> toast("Arquivo grande demais para a memória do aparelho. Use um trecho mais curto."));
+            } catch (Throwable e) {
+                final String m = e.getMessage();
+                ui.post(() -> toast("Erro: " + m));
             }
         }, "gfdrps-load").start();
     }
@@ -492,9 +528,9 @@ public final class MainActivity extends Activity {
                 + "Keyboard – teclas cromáticas (∞ sustenta, curva = legato).\n"
                 + "Loop Player – toque liga/desliga o loop sincronizado.\n\n"
                 + "◀| (esquerda) inverte o sample. Filtro: toque de novo no ícone do filtro para alternar passa-baixas/passa-altas (o ícone muda).\n■ para tudo: vozes, loops e gestos; ▶ retoma.\n"
-                + "Sliders: volume · attack · release · pan.\n"
-                + "● grava seus gestos por N compassos e repete em loop.\n"
-                + "Rodapé: toque num slot para escolher, segure para o menu; mic grava no slot; círculos duplos gravam o mix (resample).";
+                + "Sliders: volume · attack · decay · sustain · release · pan.\n"
+                + "● arma a gravação de gestos: ela começa sozinha no primeiro toque (waveform ou pad de efeito), dura N compassos e repete em loop.\n"
+                + "Latch: o som continua ao soltar e ao trocar de modo (um novo gesto ou desligar o latch solta). Q: quantiza os toques do Slicer/Keyboard na grade do BPM (segure para mudar 1/4–1/32). ▶ (Slicer): toca as fatias sozinho, 🎲 embaralha. sync: delay travado no BPM. Arrastar o BPM: horizontal.\nRodapé: toque num slot para escolher, segure para o menu; mic grava no slot; círculos duplos gravam o mix (resample).";
         new AlertDialog.Builder(this).setTitle("Como tocar").setMessage(t).setPositiveButton("OK", null).show();
     }
 
@@ -518,7 +554,7 @@ public final class MainActivity extends Activity {
     private static final class BpmView extends View {
         private final Engine engine;
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private float lastY, startY;
+        private float lastX, startX;
         private long lastTap;
         private double tapAvg;
 
@@ -526,16 +562,16 @@ public final class MainActivity extends Activity {
 
         @Override public boolean onTouchEvent(MotionEvent e) {
             switch (e.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN: lastY = startY = e.getY(); return true;
+                case MotionEvent.ACTION_DOWN: lastX = startX = e.getX(); getParent().requestDisallowInterceptTouchEvent(true); return true;
                 case MotionEvent.ACTION_MOVE: {
-                    float dy = lastY - e.getY();
-                    lastY = e.getY();
-                    engine.bpm = Math.max(40.0, Math.min(240.0, engine.bpm + dy * 0.1));
+                    float dx = e.getX() - lastX;               // horizontal: right = faster (the top of the screen is the edge)
+                    lastX = e.getX();
+                    engine.bpm = Math.max(40.0, Math.min(240.0, engine.bpm + dx * 0.2));
                     invalidate();
                     return true;
                 }
                 case MotionEvent.ACTION_UP:
-                    if (Math.abs(e.getY() - startY) < 12) {
+                    if (Math.abs(e.getX() - startX) < 12) {
                         long now = e.getEventTime();
                         long dt = now - lastTap;
                         if (dt > 250 && dt < 2000) {
@@ -559,6 +595,10 @@ public final class MainActivity extends Activity {
             p.setColor(Theme.TEXT);
             p.setTextSize(h * 0.55f);
             c.drawText(String.format(java.util.Locale.US, "%.1f", engine.bpm), w / 2, h / 2 + h * 0.2f, p);
+            p.setTextSize(h * 0.3f);
+            p.setColor(0x66FFFFFF);
+            c.drawText("\u25C0", h * 0.3f, h / 2 + h * 0.1f, p);
+            c.drawText("\u25B6", w - h * 0.3f, h / 2 + h * 0.1f, p);
         }
     }
 }
