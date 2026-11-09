@@ -56,6 +56,7 @@ public final class Engine {
     public void post(Runnable r) { commands.add(r); }
 
     public void loadSample(int slot, Sample s) {
+        pushUndo(slot);
         post(() -> slots[slot].setSample(s, bpm));
     }
 
@@ -66,6 +67,7 @@ public final class Engine {
     public int autoSlice(int slot, int max, float sensitivity) {
         Sample s = slots[slot].sample;
         if (s == null) return 0;
+        pushUndo(slot);
         float[] m = Slicing.detect(s, max, sensitivity);
         slots[slot].markers = m.length == 0 ? null : m;
         return m.length;
@@ -82,7 +84,102 @@ public final class Engine {
         });
     }
 
-    public void reverseSample(int slot) { post(() -> slots[slot].reverseSample()); }
+    public void reverseSample(int slot) { pushUndo(slot); post(() -> slots[slot].reverseSample()); }
+
+    // ---------------------------------------------------------------- undo
+    private static final class UndoItem { Slot.Snapshot sn; GestureRecorder.Snap gs; }
+    @SuppressWarnings("unchecked")
+    private final java.util.ArrayDeque<UndoItem>[] undo = new java.util.ArrayDeque[SLOTS];
+
+    /** Remembers the slot's sample, markers, region and recorded gestures so {@link #undo} can bring them back. */
+    public synchronized void pushUndo(int slot) {
+        UndoItem u = new UndoItem();
+        u.sn = slots[slot].snapshot();
+        u.gs = slots[slot].gestures.snap();
+        if (undo[slot] == null) undo[slot] = new java.util.ArrayDeque<>();
+        undo[slot].push(u);
+        while (undo[slot].size() > 8) undo[slot].removeLast();
+        // memory budget: undo keeps old samples alive, so drop the oldest steps if they add up to too much
+        for (;;) {
+            java.util.IdentityHashMap<Object, Boolean> seen = new java.util.IdentityHashMap<>();
+            long bytes = 0; int slotMost = -1, most = 0;
+            for (int i = 0; i < SLOTS; i++) {
+                if (undo[i] == null) continue;
+                if (undo[i].size() > most) { most = undo[i].size(); slotMost = i; }
+                for (UndoItem it : undo[i]) if (it.sn.sample != null && seen.put(it.sn.sample, true) == null) bytes += 4L * it.sn.sample.data.length;
+            }
+            if (bytes <= 160L * 1024 * 1024 || slotMost < 0 || undo[slotMost].size() <= 1) break;
+            undo[slotMost].removeLast();
+        }
+    }
+
+    public synchronized void clearUndo() { for (int i = 0; i < SLOTS; i++) if (undo[i] != null) undo[i].clear(); }
+
+    public synchronized boolean canUndo(int slot) { return undo[slot] != null && !undo[slot].isEmpty(); }
+
+    public synchronized boolean undo(int slot) {
+        if (!canUndo(slot)) return false;
+        final UndoItem u = undo[slot].pop();
+        post(() -> {
+            slots[slot].restore(u.sn);
+            slots[slot].gestures.restore(u.gs, (t, id, x, y) -> emitGesture(slot, t, id, x, y));
+        });
+        return true;
+    }
+
+    /** Cuts the slot's sample to its region (start/end handles). Returns immediately; undoable. */
+    public void trim(int slot) {
+        pushUndo(slot);
+        post(() -> slots[slot].trimToRegion());
+    }
+
+    /** Region handles (Keyboard start/end, also what trim uses). */
+    public void setRegion(int slot, float a, float b) {
+        a = Math.max(0f, Math.min(1f, a)); b = Math.max(0f, Math.min(1f, b));
+        slots[slot].regStart = Math.min(a, b - 0.002f < 0 ? 0 : b - 0.002f);
+        slots[slot].regEnd = Math.max(b, a + 0.002f > 1 ? 1 : a + 0.002f);
+    }
+
+    // gesture take editing (audio thread)
+    public void quantizeGestures(int slot, double grid) { pushUndo(slot); post(() -> slots[slot].gestures.quantize(grid, (t, id, x, y) -> emitGesture(slot, t, id, x, y))); }
+    public void nudgeGestures(int slot, double beats) { pushUndo(slot); post(() -> slots[slot].gestures.nudge(beats, (t, id, x, y) -> emitGesture(slot, t, id, x, y))); }
+    public void removeGestureKind(int slot, boolean fx) { pushUndo(slot); post(() -> slots[slot].gestures.removeKind(fx, (t, id, x, y) -> emitGesture(slot, t, id, x, y))); }
+
+    // ---------------------------------------------------------------- MIDI clock in
+    private final MidiClock midiClock = new MidiClock();
+    /** When true the project tempo follows incoming MIDI clock, and start/stop messages drive the transport. */
+    public volatile boolean midiSync = false;
+
+    public void midiTick(long nanos) {
+        double b = midiClock.tick(nanos);
+        if (midiSync && b > 0) bpm = Math.max(30.0, Math.min(300.0, b));
+    }
+    public void midiStart() { if (!midiSync) return; midiClock.reset(); post(() -> { beatAcc = 0; playing = true; }); }
+    public void midiContinue() { if (midiSync) playing = true; }
+    public void midiStop() { if (!midiSync) return; post(() -> { playing = false; for (Slot s : slots) s.fadeAll(); }); }
+
+    // ---------------------------------------------------------------- export of what you hear (WAV)
+    private volatile boolean exporting;
+    private final java.util.concurrent.ConcurrentLinkedQueue<short[]> exportChunks = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private volatile int exportFrames;
+    public static final int EXPORT_MAX_SECONDS = 300;
+
+    public void startExport() { exportChunks.clear(); exportFrames = 0; exporting = true; }
+    public boolean isExporting() { return exporting; }
+    public int exportSeconds() { return exportFrames / rate; }
+
+    /** Stops the capture and returns interleaved stereo 16-bit PCM of everything that was played (null if nothing). */
+    public short[] stopExport() {
+        exporting = false;
+        int total = 0;
+        for (short[] c : exportChunks) total += c.length;
+        if (total == 0) return null;
+        short[] out = new short[total];
+        int o = 0;
+        for (short[] c : exportChunks) { System.arraycopy(c, 0, out, o, c.length); o += c.length; }
+        exportChunks.clear();
+        return out;
+    }
 
     public void setMode(int slot, int mode) { slots[slot].mode = mode; }
 
@@ -110,6 +207,7 @@ public final class Engine {
     }
 
     public void clearGestures(int slot) {
+        pushUndo(slot);
         post(() -> slots[slot].gestures.clear((t, id, x, y) -> emitGesture(slot, t, id, x, y)));
     }
 
@@ -179,6 +277,12 @@ public final class Engine {
             for (int i = 0; i < n; i++) {
                 pcm[(done + i) * 2] = (short) (limit(mixL[i]) * 32767f);
                 pcm[(done + i) * 2 + 1] = (short) (limit(mixR[i]) * 32767f);
+            }
+            if (exporting) {
+                if (exportFrames < rate * EXPORT_MAX_SECONDS) {
+                    exportChunks.add(java.util.Arrays.copyOfRange(pcm, done * 2, (done + n) * 2));
+                    exportFrames += n;
+                } else exporting = false;            // length cap reached
             }
             done += n;
         }

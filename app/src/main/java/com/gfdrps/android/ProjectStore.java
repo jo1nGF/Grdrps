@@ -36,6 +36,30 @@ public final class ProjectStore {
         return out;
     }
 
+    /** Effect pad positions (and delay sync / filter type) so a project comes back sounding the same. */
+    private static JSONArray fxJson(com.gfdrps.core.Fx.Effect[] fx) throws Exception {
+        JSONArray a = new JSONArray();
+        for (com.gfdrps.core.Fx.Effect f : fx) {
+            JSONObject o = new JSONObject();
+            o.put("x", f.x); o.put("y", f.y);
+            if (f instanceof com.gfdrps.core.Fx.Delay) o.put("sync", ((com.gfdrps.core.Fx.Delay) f).sync);
+            if (f instanceof com.gfdrps.core.Fx.Filter) o.put("hp", ((com.gfdrps.core.Fx.Filter) f).highPass);
+            a.put(o);
+        }
+        return a;
+    }
+
+    private static void fxLoad(JSONArray a, com.gfdrps.core.Fx.Effect[] fx) {
+        for (int k = 0; k < fx.length && k < a.length(); k++) {
+            JSONObject o = a.optJSONObject(k);
+            if (o == null) continue;
+            fx[k].setXY((float) o.optDouble("x", fx[k].x), (float) o.optDouble("y", fx[k].y));
+            fx[k].active = false;
+            if (fx[k] instanceof com.gfdrps.core.Fx.Delay) ((com.gfdrps.core.Fx.Delay) fx[k]).sync = o.optBoolean("sync", false);
+            if (fx[k] instanceof com.gfdrps.core.Fx.Filter) ((com.gfdrps.core.Fx.Filter) fx[k]).highPass = o.optBoolean("hp", false);
+        }
+    }
+
     public static String safe(String n) {
         String s = n.trim().replaceAll("[^A-Za-z0-9 _\\-]", "_");
         return s.isEmpty() ? "projeto" : s;
@@ -47,6 +71,8 @@ public final class ProjectStore {
         JSONObject j = new JSONObject();
         j.put("bpm", e.bpm);
         j.put("master", e.masterVolume);
+        j.put("mfx", fxJson(e.master));
+        j.put("fxHold", e.fxHold);
         JSONArray arr = new JSONArray();
         for (int i = 0; i < Engine.SLOTS; i++) {
             Slot s = e.slots[i];
@@ -57,6 +83,9 @@ public final class ProjectStore {
             o.put("legato", s.legato); o.put("arpRandom", s.arpRandom); o.put("sampleBeats", s.sampleBeats);
             o.put("reversed", s.reversed);
             o.put("quantize", s.quantize); o.put("shuffle", s.shuffle);
+            o.put("pingPong", s.pingPong); o.put("stretch", s.stretch); o.put("bowSize", s.bowSize);
+            o.put("regStart", s.regStart); o.put("regEnd", s.regEnd);
+            o.put("fx", fxJson(s.fx));
             GestureRecorder gr = s.gestures;
             int gn = gr.state == GestureRecorder.PLAYING ? gr.eventCount() : 0;
             if (gn > 0) {                                           // the recorded take (finger and effect-pad events)
@@ -92,6 +121,10 @@ public final class ProjectStore {
         JSONObject j = new JSONObject(new String(readAll(new File(dir, "project.json")), "UTF-8"));
         e.bpm = j.optDouble("bpm", 120);
         e.masterVolume = (float) j.optDouble("master", 0.8);
+        e.fxHold = j.optBoolean("fxHold", false);
+        JSONArray mfx = j.optJSONArray("mfx");
+        if (mfx != null) fxLoad(mfx, e.master);
+        e.clearUndo();
         JSONArray arr = j.getJSONArray("slots");
         for (int i = 0; i < Engine.SLOTS && i < arr.length(); i++) {
             JSONObject o = arr.getJSONObject(i);
@@ -110,6 +143,11 @@ public final class ProjectStore {
             s.legato = o.optBoolean("legato", false);
             s.arpRandom = o.optBoolean("arpRandom", false);
             s.quantize = o.optBoolean("quantize", false);
+            s.pingPong = o.optBoolean("pingPong", false); s.stretch = o.optBoolean("stretch", false);
+            s.bowSize = (float) o.optDouble("bowSize", 0.45);
+            s.regStart = (float) o.optDouble("regStart", 0.0); s.regEnd = (float) o.optDouble("regEnd", 1.0);
+            JSONArray fxa = o.optJSONArray("fx");
+            if (fxa != null) fxLoad(fxa, s.fx);
             s.shuffle = o.optBoolean("shuffle", false);
             JSONObject gj = o.optJSONObject("gestures");
             if (gj != null) {

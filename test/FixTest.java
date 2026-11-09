@@ -695,6 +695,157 @@ public class FixTest {
             System.out.println("     linha de 60 Hz no envelope: " + line60);
             check(line60 < 0.06, "Scratch a 60 Hz: sem modulação de 60 Hz no volume (" + line60 + ")");
         }
+        System.out.println("== v1.4: ping-pong, Bow, degraus, regiao, trim, stretch");
+        {
+            // rampa: valor = posicao
+            float[] ramp = new float[R * 8];
+            for (int i = 0; i < ramp.length; i++) ramp[i] = 0.8f * i / ramp.length;
+            // ping-pong
+            final Slot pp = new Slot(R);
+            pp.setSample(new Sample(ramp, R, "ramp"), 120);
+            pp.mode = Slot.LOOPER; pp.pingPong = true; pp.attack = 0f;
+            float[] o = renderSlot(pp, 4.0, 120, b -> { if (b == 0) { pp.handle(0, 0, 0.2f, 0.5f, 0, 0); pp.handle(0, 1, 0.3f, 0.5f, 0, 0); } });
+            float mn = 9, mx = -9, md = 0; int turns = 0; float prev = 0; int dir = 0;
+            for (int i = (int) (0.3 * R); i < o.length; i++) {
+                mn = Math.min(mn, o[i]); mx = Math.max(mx, o[i]);
+                float d = o[i] - o[i - 1]; md = Math.max(md, Math.abs(d));
+                int nd = d > 1e-6f ? 1 : (d < -1e-6f ? -1 : dir);
+                if (nd != dir && dir != 0) turns++;
+                dir = nd;
+            }
+            check(turns >= 4 && md < 0.1f * (mx - mn) && mx - mn > 0.01f, "Looper ping-pong: vai e volta sem saltos (" + turns + " viradas, salto max " + md + ")");
+            // Bow: altura = volume; ate 4 notas
+            final Slot bw = new Slot(R);
+            float[] flat = new float[R * 4]; java.util.Arrays.fill(flat, 0.5f);
+            bw.setSample(new Sample(flat, R, "flat"), 120);
+            bw.mode = Slot.BOW; bw.attack = 0f; bw.sustain = 1f;
+            float[] hi = renderSlot(bw, 0.6, 120, b -> { if (b == 0) bw.handle(0, 0, 0.5f, 0.05f, 0, 0); });
+            final Slot bw2 = new Slot(R);
+            bw2.setSample(new Sample(flat, R, "flat"), 120); bw2.mode = Slot.BOW; bw2.attack = 0f; bw2.sustain = 1f;
+            float[] lo = renderSlot(bw2, 0.6, 120, b -> { if (b == 0) bw2.handle(0, 0, 0.5f, 0.95f, 0, 0); });
+            check(rms(hi, (int) (0.3 * R), (int) (0.5 * R)) > 1.5f * rms(lo, (int) (0.3 * R), (int) (0.5 * R)), "Bow: altura do dedo controla o volume");
+            final Slot b5 = new Slot(R);
+            b5.setSample(new Sample(flat, R, "flat"), 120); b5.mode = Slot.BOW;
+            renderSlot(b5, 0.5, 120, b -> { if (b == 0) for (int k = 0; k < 6; k++) b5.handle(0, k, 0.1f + 0.1f * k, 0.5f, 0, 0); });
+            check(b5.activeVoices <= 4, "Bow: no maximo 4 notas (" + b5.activeVoices + ")");
+            // tamanho do grao
+            final Slot g1 = new Slot(R), g2 = new Slot(R);
+            float[] tone = sine(220, R * 4, 0.6f);
+            g1.setSample(new Sample(tone, R, "t"), 120); g2.setSample(new Sample(tone, R, "t"), 120);
+            g1.mode = g2.mode = Slot.BOW; g1.bowSize = 0.02f; g2.bowSize = 1f;
+            float[] a1 = renderSlot(g1, 1.0, 120, b -> { if (b == 0) g1.handle(0, 0, 0.5f, 0.3f, 0, 0); });
+            float[] a2 = renderSlot(g2, 1.0, 120, b -> { if (b == 0) g2.handle(0, 0, 0.5f, 0.3f, 0, 0); });
+            check(a1.length == a2.length && rms(a1, R / 2, (int) (0.9 * R)) > 0.01f && rms(a2, R / 2, (int) (0.9 * R)) > 0.01f, "Bow: controle de grão funciona nos extremos");
+
+            // Tape em degraus: com marcadores (div=8) um movimento pequeno nao muda a velocidade
+            double[] sl = new double[2];
+            for (int pass = 0; pass < 2; pass++) {
+                final Slot tp = new Slot(R);
+                tp.setSample(new Sample(ramp, R, "ramp"), 120);
+                tp.mode = Slot.TAPE; tp.div = pass == 0 ? 8 : 0; tp.attack = 0f;
+                float[] to = renderSlot(tp, 2.0, 120, b -> { if (b == 0) tp.handle(0, 0, 0.1f, 0.5f, 0, 0); if (b == 300) tp.handle(1, 0, 0.1f + 0.03f, 0.5f, 0, 0); });
+                int a0 = (int) (0.4 * R), a1i = (int) (1.2 * R), a2i = (int) (1.9 * R);
+                double s1 = (to[a0 + 2000] - to[a0]) / 2000.0, s2 = (to[a2i + 2000] - to[a2i]) / 2000.0;
+                sl[pass] = s2 / Math.max(1e-9, s1);
+            }
+            check(Math.abs(sl[0] - 1.0) < 0.05 && Math.abs(sl[1] - 1.0) > 0.05, "Tape: com marcadores a velocidade anda em degraus (" + sl[0] + " vs livre " + sl[1] + ")");
+
+            // Keyboard com regiao: comeca no marcador de inicio
+            float[] two = new float[R * 4];
+            for (int i = 0; i < two.length; i++) two[i] = i < two.length / 2 ? 0.2f : 0.6f;
+            final Slot kb = new Slot(R), kb2 = new Slot(R);
+            kb.setSample(new Sample(two, R, "two"), 120); kb2.setSample(new Sample(two, R, "two"), 120);
+            kb.mode = kb2.mode = Slot.KEYBOARD; kb.attack = kb2.attack = 0f; kb2.regStart = 0.5f; kb2.regEnd = 0.75f;
+            float[] k1 = renderSlot(kb, 0.3, 120, b -> { if (b == 0) kb.handle(0, 0, 0.5f, 0.2f, 0, 0); });
+            float[] k2 = renderSlot(kb2, 0.3, 120, b -> { if (b == 0) kb2.handle(0, 0, 0.5f, 0.2f, 0, 0); });
+            check(rms(k2, 2000, 6000) > 2.0f * rms(k1, 2000, 6000), "Keyboard: nota começa no marcador de início da região");
+
+            // Trim
+            final Slot tr = new Slot(R);
+            tr.setSample(new Sample(ramp, R, "ramp"), 120);
+            tr.markers = new float[]{0.25f, 0.6f, 0.9f}; tr.regStart = 0.5f; tr.regEnd = 1f;
+            boolean did = tr.trimToRegion();
+            check(did && tr.sample.length() == R * 4 && tr.markers != null && tr.markers.length == 2 && Math.abs(tr.markers[0] - 0.2f) < 0.01f && tr.regStart == 0f,
+                  "Trim: corta para a região e reescala os marcadores");
+
+            // Time-stretch: tempo muda, altura nao
+            float[] tn = sine(440, R * 4, 0.6f);
+            for (int c = 0; c < 3; c++) {
+                final Slot st = new Slot(R);
+                st.setSample(new Sample(tn, R, "tone"), 120);
+                st.mode = Slot.LOOPPLAYER; st.attack = 0f;
+                st.stretch = c < 2; st.transpose = c == 1 ? 12 : 0;
+                double bpmT = c == 1 ? 120 : 150;                        // 150 bpm = 1.25x o tempo
+                final Slot sf = st;
+                float[] so = renderSlot(st, 3.0, bpmT, b -> { if (b == 0) sf.handle(0, 0, 0.5f, 0.5f, 0, 0); });
+                int zc = 0;
+                int z0 = R, z1 = 2 * R;
+                for (int i = z0 + 1; i < z1; i++) if (so[i - 1] < 0 && so[i] >= 0) zc++;
+                double expect = c == 0 ? 440 : c == 1 ? 880 : 550;
+                String name = c == 0 ? "stretch 1.25x" : c == 1 ? "stretch +12 st" : "sem stretch 1.25x";
+                check(Math.abs(zc - expect) < expect * 0.04, "Time-stretch (" + name + "): frequência " + zc + " Hz ~ " + expect + " Hz");
+            }
+        }
+        System.out.println("== v1.4: desfazer, MIDI clock, exportar, edição de gestos");
+        {
+            Engine e = new Engine(R);
+            short[] pcm = new short[256 * 2];
+            Sample orig = e.slots[0].sample;
+            float[] nd = new float[R]; java.util.Arrays.fill(nd, 0.3f);
+            e.loadSample(0, new Sample(nd, R, "novo")); e.process(pcm, 256);
+            check(e.slots[0].sample != orig && e.slots[0].sample.length() == R, "Undo: novo sample carregado");
+            check(e.undo(0), "Undo: há passo para desfazer"); e.process(pcm, 256);
+            check(e.slots[0].sample == orig, "Undo: volta ao sample anterior");
+            e.reverseSample(0); e.process(pcm, 256);
+            boolean rev = e.slots[0].reversed;
+            e.undo(0); e.process(pcm, 256);
+            check(rev && !e.slots[0].reversed && e.slots[0].sample == orig, "Undo: desfaz o reverse");
+            e.slots[0].regStart = 0.25f; e.slots[0].regEnd = 0.5f;
+            int len0 = e.slots[0].sample.length();
+            e.trim(0); e.process(pcm, 256);
+            int lenT = e.slots[0].sample.length();
+            e.undo(0); e.process(pcm, 256);
+            check(lenT < len0 / 3 && e.slots[0].sample.length() == len0 && e.slots[0].regStart == 0.25f, "Undo: desfaz o corte (trim)");
+
+            MidiClock mc = new MidiClock(); double bp = 0; long t = 1_000_000_000L;
+            for (int i = 0; i < 120; i++) { bp = mc.tick(t); t += (long) (60e9 / 120.0 / 24.0); }
+            check(Math.abs(bp - 120) < 0.5, "MIDI clock: 120 bpm detectado (" + bp + ")");
+            for (int i = 0; i < 200; i++) { bp = mc.tick(t); t += (long) (60e9 / 90.0 / 24.0); }
+            check(Math.abs(bp - 90) < 0.5, "MIDI clock: acompanha mudança para 90 bpm (" + bp + ")");
+            e.midiSync = true;
+            for (int i = 0; i < 60; i++) e.midiTick(5_000_000_000L + i * (long) (60e9 / 100.0 / 24.0));
+            check(Math.abs(e.bpm - 100) < 1, "Engine segue o clock MIDI (" + e.bpm + " bpm)");
+
+            Engine x = new Engine(R);
+            x.startExport();
+            for (int i = 0; i < 20; i++) x.process(pcm, 256);
+            short[] ex = x.stopExport();
+            check(ex != null && ex.length == 20 * 256 * 2, "Exportar: captura exatamente o que foi tocado (" + (ex == null ? 0 : ex.length / 2) + " frames)");
+
+            // edição de gestos: quantizar e remover
+            Engine g = new Engine(R);
+            g.bpm = 240;
+            g.slots[1].mode = Slot.SLICER;
+            g.armGestures(1, 1);
+            g.touch(1, 0, 0, 0.3f, 0.2f); g.process(pcm, 256);
+            for (int i = 0; i < 7; i++) g.process(pcm, 256);
+            g.touch(1, 2, 0, 0, 0); g.process(pcm, 256);
+            for (int i = 0; i < 4; i++) g.process(pcm, 256);
+            g.fxTouch(1, 3, Fx.FILTER, 0.5f, 0.5f); g.process(pcm, 256);
+            g.fxTouch(1, 5, Fx.FILTER, 0, 0);
+            for (int i = 0; i < 400 && g.slots[1].gestures.state == GestureRecorder.RECORDING; i++) g.process(pcm, 256);
+            GestureRecorder gr = g.slots[1].gestures;
+            g.quantizeGestures(1, 0.25); g.process(pcm, 256);
+            boolean onGrid = gr.eventCount() >= 4;
+            for (int i = 0; i < gr.eventCount(); i++) { double q = gr.phaseAt(i) / 0.25; if (Math.abs(q - Math.round(q)) > 1e-6) onGrid = false; }
+            check(onGrid, "Gestos: quantizar encaixa os eventos na grade de 1/16");
+            int before = gr.eventCount();
+            g.removeGestureKind(1, true); g.process(pcm, 256);
+            int fxLeft = 0; for (int i = 0; i < gr.eventCount(); i++) if (gr.typeAt(i) >= 3) fxLeft++;
+            check(fxLeft == 0 && gr.eventCount() < before && gr.eventCount() > 0, "Gestos: remover só os movimentos do pad de efeito");
+            g.undo(1); g.process(pcm, 256);
+            check(g.slots[1].gestures.eventCount() == before, "Gestos: desfazer restaura o take");
+        }
         System.out.println(fails == 0 ? "\nTODOS OS TESTES PASSARAM" : "\nFALHAS: " + fails);
         System.exit(fails == 0 ? 0 : 1);
     }

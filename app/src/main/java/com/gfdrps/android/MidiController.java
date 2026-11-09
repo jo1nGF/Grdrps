@@ -79,7 +79,7 @@ public final class MidiController {
             if (port == null) { status("Porta MIDI indisponível"); return; }
             port.connect(new MidiReceiver() {
                 @Override public void onSend(byte[] data, int offset, int count, long timestamp) {
-                    parse(data, offset, count);
+                    parse(data, offset, count, timestamp);
                 }
             });
             String n = info.getProperties().getString(MidiDeviceInfo.PROPERTY_NAME);
@@ -95,12 +95,19 @@ public final class MidiController {
 
     private void status(String s) { if (listener != null) listener.onMidiStatus(s); }
 
-    private void parse(byte[] d, int off, int count) {
+    private void parse(byte[] d, int off, int count, long ts) {
         int i = off;
         int end = off + count;
         while (i < end) {
             int st = d[i] & 0xFF;
             if (st < 0x80) { i++; continue; }
+            if (st >= 0xF8) {                                       // real-time messages: clock, start, continue, stop
+                if (st == 0xF8) engine.midiTick(ts != 0 ? ts : System.nanoTime());
+                else if (st == 0xFA) engine.midiStart();
+                else if (st == 0xFB) engine.midiContinue();
+                else if (st == 0xFC) engine.midiStop();
+                i++; continue;
+            }
             int type = st & 0xF0, ch = st & 0x0F;
             if ((type == 0x90 || type == 0x80 || type == 0xB0) && i + 2 < end) {
                 int a = d[i + 1] & 0x7F, b = d[i + 2] & 0x7F;

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.4 (build 5)
+- **Looper**: botão P-P liga o ping-pong (o loop vai e volta entre os dedos, sem saltos).
+- **Bow**: altura do dedo = volume; slider azul novo = tamanho do grão (de granular a pad); no máximo 4 notas.
+- **Tape / Scratch**: com 4/8/16/32 selecionado a velocidade (Tape) e a posição (Scratch) andam em degraus.
+- **Keyboard**: botão de marcador edita início e fim do sample; segure para voltar ao sample inteiro.
+- **Zoom da waveform** (botão 1x–16x, segure para voltar; a barra no topo rola) para Slicer, Looper, Bow, Arp e edição de região.
+- **Cortar (trim)**: menu do slot → "Cortar o sample para início/fim"; os marcadores são reescalados.
+- **Loop Player STR**: time-stretch (WSOLA) — o BPM muda o tempo sem mudar a altura, e a transposição muda a altura sem mudar o tempo.
+- **Desfazer** (botão undo): sample, reverse, trim, fatias, região e gestos (até 8 passos por slot, com limite de memória).
+- **Exportar**: menu Gf → gravar o que está tocando em WAV estéreo (Music/GfDrps); menu do slot → exportar o sample em WAV.
+- **Projeto**: agora salva as posições dos efeitos (XY, sync do delay, LP/HP), hold e as novas opções.
+- **MIDI clock de entrada**: menu Gf → "Clock MIDI externo": o BPM segue o clock e start/stop controlam o transporte.
+- **Gestos**: segure o ● para quantizar (1/16, 1/8, 1/4), deslocar, ou apagar só o pad de efeito / só os toques da waveform.
+- **Ajuda**: o "?" mostra um overlay com cada controle numerado sobre a própria tela (segure o "?" para o texto completo).
+- Botões que não valem para o modo atual ficam esmaecidos (grade, legato, editar, ação do modo).
+
 ## 1.3 (build 4)
 - **Estabilidade**: corrigido o fechamento ao mudar o número de fatias no modo Arp (índice fora do limite ao desenhar) e uma exceção no Looper ao soltar os dedos depois do Stop; a thread de áudio não derruba mais o app (silêncio no bloco com erro); importação de arquivos grandes por streaming (codec), limite de 4 min, `largeHeap` e aviso se faltar memória.
 - **Latência**: buffer de áudio do menor tamanho estável (2 bursts) que cresce sozinho se houver underrun; toques sem agrupamento (`requestUnbufferedDispatch`) na waveform e no pad.

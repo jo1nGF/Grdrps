@@ -2,7 +2,7 @@ package com.gfdrps.core;
 
 /** One playing voice of a slot. Rendering is mode-specific; all positions are in sample frames. */
 final class Voice {
-    static final int PLAY = 0, BOW = 1, TAPE = 2, SCRATCH = 3;
+    static final int PLAY = 0, BOW = 1, TAPE = 2, SCRATCH = 3, STRETCH = 4;
     private static final float DIP = 1f / 96f;   // 2 ms declick when a voice has to jump
 
     volatile boolean active;
@@ -21,6 +21,7 @@ final class Voice {
     double speedTgt = 1.0; float glide = 0f;      // glide > 0: speed slews to speedTgt (no zipper/clicks)
     double start, end;
     boolean loop;
+    boolean pingPong;      // loop bounces between the region ends instead of jumping back
     float vel = 1f, env = 0f;
     // ADSR: stage 0 attack, 1 decay, 2 sustain, 3 release
     int stage;
@@ -62,6 +63,7 @@ final class Voice {
         releasing = false;
         latched = false;
         scrAge = 0; scrTv = 0.0; scrDt = 0;
+        sgInit = false;
         stage = 0;
         decayOnRelease = false;
         scratchAmp = 0f;
@@ -140,7 +142,7 @@ final class Voice {
 
     private float readLoop(double p) {
         // outside the region (just moved by a finger) or mid-declick: read plainly, the dip hides the jump
-        if (dip != 0 || p < start || p >= end) return sm.at(p);
+        if (dip != 0 || pingPong || p < start || p >= end) return sm.at(p);
         double len = end - start;
         double xf = Math.min(len * 0.25, engineRate * 0.004);
         if (speed >= 0) {
@@ -190,6 +192,7 @@ final class Voice {
                 case BOW: s = bowSample(); break;
                 case TAPE: s = tapeSample(len); if (!active) return; break;
                 case SCRATCH: s = scratchSample(len); break;
+                case STRETCH: s = stretchSample(); break;
                 default: s = playSample(); break;
             }
             out[i] += s * env * vel * dipG;
@@ -209,6 +212,11 @@ final class Voice {
         if (dip != 0) return s;                    // a declick jump is already in progress
         double step = Math.abs(inc) * 2 + 2;       // a normal wrap overshoots by less than this
         double len = end - start;
+        if (loop && pingPong && len > 1) {                  // reflect at the ends: the playhead stays continuous
+            if (pos >= end) { pos = Math.max(start, end - (pos - end) % len); speed = -Math.abs(speed); speedTgt = speed; }
+            else if (pos < start) { pos = Math.min(end - 1, start + (start - pos) % len); speed = Math.abs(speed); speedTgt = speed; }
+            return s;
+        }
         if (inc >= 0) {
             if (pos >= end) {
                 if (loop) {
@@ -248,6 +256,59 @@ final class Voice {
             }
             gPh[g] = ph;
         }
+        return acc;
+    }
+
+    // ---- time stretch (WSOLA): tempo follows `speed`, pitch follows `pitch`, independent of each other
+    double pitch = 1.0;
+    private static final int SG = 2048, SH = SG / 2;
+    private static final float[] HANN = new float[SG];
+    static { for (int i = 0; i < SG; i++) HANN[i] = 0.5f - 0.5f * (float) Math.cos(2 * Math.PI * i / SG); }
+    private final double[] sgStart = new double[2];
+    private final int[] sgIdx = {0, -1};
+    private int sgHop, sgCur;
+    private double sgAna, sgPrevNext;
+    private boolean sgInit;
+
+    private double wrapPos(double p) {
+        double len = end - start;
+        if (len <= 1) return start;
+        if (p >= end) p = start + (p - start) % len;
+        else if (p < start) p = end - (start - p) % len;
+        return p;
+    }
+
+    private float stretchSample() {
+        if (!sgInit) { sgInit = true; sgAna = pos; sgStart[0] = pos; sgIdx[0] = 0; sgIdx[1] = -1; sgHop = 0; sgCur = 0; sgPrevNext = pos; }
+        if (sgHop >= SH) {                                          // time for the next grain: pick its start by waveform similarity
+            sgHop = 0;
+            double nominal = wrapPos(sgAna);
+            double ref = wrapPos(sgPrevNext);                      // where the previous grain would have continued
+            double best = nominal; double bestScore = -1e30;
+            final int M = 256, SEARCH = 384;
+            for (int d = -SEARCH; d <= SEARCH; d += 8) {
+                double c = wrapPos(nominal + d);
+                double sc = 0;
+                for (int j = 0; j < M; j += 4) sc += sm.at(wrapPos(c + j)) * sm.at(wrapPos(ref + j));
+                sc -= Math.abs(d) * 1e-5;                           // prefer staying near the nominal position
+                if (sc > bestScore) { bestScore = sc; best = c; }
+            }
+            sgCur ^= 1;
+            sgStart[sgCur] = best; sgIdx[sgCur] = 0;
+        }
+        double step = pitch * ratio;
+        float acc = 0f;
+        for (int g = 0; g < 2; g++) {
+            int gi = sgIdx[g];
+            if (gi < 0) continue;
+            acc += sm.at(wrapPos(sgStart[g] + gi * step)) * HANN[gi];
+            if (++sgIdx[g] >= SG) sgIdx[g] = -1;
+        }
+        if (sgHop == SH - 1) sgPrevNext = sgStart[sgCur] + SH * step;      // continuation point for the next alignment
+        sgHop++;
+        sgAna += speed * ratio;
+        if (sgAna >= end || sgAna < start) sgAna = wrapPos(sgAna);
+        pos = sgAna;
         return acc;
     }
 

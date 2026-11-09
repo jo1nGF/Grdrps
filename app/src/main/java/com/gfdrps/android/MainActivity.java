@@ -46,8 +46,9 @@ public final class MainActivity extends Activity {
     private final Widgets.Tile[] divTiles = new Widgets.Tile[Slot.DIVS.length];
     private final Widgets.Tile[] fxTiles = new Widgets.Tile[Fx.COUNT];
     private final SlotStrip[] strips = new SlotStrip[Engine.SLOTS];
-    private Widgets.Tile revT, ctxT, edT, glideT, infT, recGestT, barsT, metroT, playT, micT, mixT, trValT, masterFxT, latchT, lkT, qT, autoT, shufT, syncT;
-    private Widgets.Slider volS, attS, decS, susS, relS, panS, masterS;
+    private Widgets.Tile revT, ctxT, edT, glideT, infT, recGestT, barsT, metroT, playT, micT, mixT, trValT, masterFxT, latchT, lkT, qT, autoT, shufT, syncT, zoomT, undoT, gfT, fileT, stopT, helpT;
+    private Widgets.Slider volS, attS, decS, susS, relS, panS, masterS, sizeS;
+    private HelpOverlay helpOverlay;
     private BpmView bpmView;
     private int pendingMicMode = Engine.REC_OFF;
 
@@ -124,7 +125,8 @@ public final class MainActivity extends Activity {
 
         // row 1: menu, metronome, bpm, master volume, stop, help
         LinearLayout r1 = row();
-        r1.addView(tile().text("Gf v" + versionName()).textScale(0.6f).accent(0xFFFFFFFF).onClick(this::mainMenu), lp(1.3f));
+        gfT = tile().text("Gf v" + versionName()).textScale(0.6f).accent(0xFFFFFFFF).onClick(this::mainMenu);
+        r1.addView(gfT, lp(1.3f));
         metroT = tile().icon(Theme.I_METRO).accent(0xFF2FE0C8).onClick(() -> { engine.metronome = !engine.metronome; metroT.setOn(engine.metronome); });
         r1.addView(metroT, lp(0.9f));
         bpmView = new BpmView(this, engine);
@@ -132,15 +134,21 @@ public final class MainActivity extends Activity {
         masterS = new Widgets.Slider(this, false).accent(0xFFE9EDF2).onValue(v -> engine.masterVolume = v);
         masterS.set(engine.masterVolume);
         r1.addView(masterS, lp(4f));
-        r1.addView(tile().icon(Theme.I_STOP).accent(0xFFFF4D5E).onClick(this::panic), lp(1f));
-        r1.addView(tile().icon(Theme.I_HELP).onClick(this::help), lp(1f));
+        stopT = tile().icon(Theme.I_STOP).accent(0xFFFF4D5E).onClick(this::panic);
+        r1.addView(stopT, lp(1f));
+        helpT = tile().icon(Theme.I_HELP).onClick(this::help).onLong(this::helpText);
+        r1.addView(helpT, lp(1f));
         left.addView(r1, lpv(1f));
 
         // row 2: file, gate, 8 modes
         LinearLayout r2 = row();
-        r2.addView(tile().icon(Theme.I_FILE).accent(0xFFFFFFFF).onClick(this::pickFile), lp(1f));
+        fileT = tile().icon(Theme.I_FILE).accent(0xFFFFFFFF).onClick(this::pickFile);
+        r2.addView(fileT, lp(1f));
         revT = tile().icon(Theme.I_REVERSE).accent(0xFF3DD6FF).onClick(() -> { engine.reverseSample(sel); ui.postDelayed(this::refresh, 120); });
         r2.addView(revT, lp(1f));
+        undoT = tile().text("undo").textScale(0.32f).accent(0xFFFF9A2E).onClick(() -> {
+            if (engine.undo(sel)) { toast("Desfeito"); ui.postDelayed(this::refresh, 120); } else toast("Nada para desfazer"); });
+        r2.addView(undoT, lp(1f));
         int[] modeIcons = {Theme.I_SLICER, Theme.I_LOOPER, Theme.I_BOW, Theme.I_TAPE, Theme.I_SCRATCH, Theme.I_ARP, Theme.I_KEYS, Theme.I_LOOPPLAY};
         for (int m = 0; m < 8; m++) {
             final int mm = m;
@@ -157,7 +165,8 @@ public final class MainActivity extends Activity {
         susS = new Widgets.Slider(this, true).accent(0xFF7CFF6B).onValue(v -> engine.slots[sel].sustain = v);
         relS = new Widgets.Slider(this, true).accent(0xFF3DD6FF).onValue(v -> engine.slots[sel].release = 0.01f + v * v * 3f);
         panS = new Widgets.Slider(this, true).accent(0xFFB46CFF).onValue(v -> engine.slots[sel].pan = v);
-        r3.addView(volS, lp(0.7f)); r3.addView(attS, lp(0.7f)); r3.addView(decS, lp(0.7f)); r3.addView(susS, lp(0.7f)); r3.addView(relS, lp(0.7f)); r3.addView(panS, lp(0.7f));
+        sizeS = new Widgets.Slider(this, true).accent(0xFF7CC4FF).onValue(v -> engine.slots[sel].bowSize = v);
+        r3.addView(volS, lp(0.7f)); r3.addView(attS, lp(0.7f)); r3.addView(decS, lp(0.7f)); r3.addView(susS, lp(0.7f)); r3.addView(relS, lp(0.7f)); r3.addView(panS, lp(0.7f)); r3.addView(sizeS, lp(0.7f));
 
         LinearLayout mid = col();
         // div row
@@ -172,9 +181,13 @@ public final class MainActivity extends Activity {
         edT = tile().icon(Theme.I_MARK).accent(0xFFFFD23F).onClick(() -> {
                     Slot sl = engine.slots[sel];
                     if (sl.mode == Slot.ARP) { int i = 0; while (i < 3 && ARP_RATES[i] != sl.arpRate) i++; sl.arpRate = ARP_RATES[(i + 1) % 4]; }
-                    else wave.setEditSlices(!wave.isEditSlices());
+                    else if (sl.mode == Slot.SLICER || sl.mode == Slot.KEYBOARD) wave.setEditSlices(!wave.isEditSlices());
                     refresh(); })
-                .onLong(() -> { engine.setMarkers(sel, null); toast("Fatias voltaram para a grade"); });
+                .onLong(() -> {
+                    Slot sl = engine.slots[sel];
+                    if (sl.mode == Slot.KEYBOARD) { engine.pushUndo(sel); engine.setRegion(sel, 0f, 1f); toast("Região: sample inteiro"); }
+                    else { engine.pushUndo(sel); engine.setMarkers(sel, null); toast("Fatias voltaram para a grade"); }
+                });
         dr.addView(edT, lp(1f));
         mid.addView(dr, lpv(1f));
         // transpose row
@@ -190,7 +203,7 @@ public final class MainActivity extends Activity {
         mid.addView(tr, lpv(1f));
         // gesture row
         LinearLayout gr = row();
-        recGestT = tile().icon(Theme.I_REC).accent(0xFFFF3B4E).onClick(this::toggleGestures);
+        recGestT = tile().icon(Theme.I_REC).accent(0xFFFF3B4E).onClick(this::toggleGestures).onLong(this::gestureMenu);
         gr.addView(recGestT, lp(1.2f));
         barsT = tile().text("4").accent(0xFFFFFFFF).textScale(0.5f).onClick(() -> { barsIdx = (barsIdx + 1) % BARS.length; refresh(); });
         gr.addView(barsT, lp(1.6f));
@@ -216,6 +229,8 @@ public final class MainActivity extends Activity {
         shufT = tile().icon(Theme.I_DICE).accent(0xFFFF4FA3).onClick(() -> {
             Slot s = engine.slots[sel]; s.shuffle = !s.shuffle; toast(s.shuffle ? "Shuffle ligado" : "Shuffle desligado"); refresh(); });
         xr.addView(shufT, lp(1f));
+        zoomT = tile().text("1x").textScale(0.4f).accent(0xFF7CC4FF).onClick(() -> { wave.cycleZoom(); refresh(); }).onLong(() -> { wave.resetZoom(); refresh(); });
+        xr.addView(zoomT, lp(1f));
         mid.addView(xr, lpv(1f));
         r3.addView(mid, lp(5.6f));
         left.addView(r3, lpv(2.7f));
@@ -298,10 +313,18 @@ public final class MainActivity extends Activity {
         revT.setOn(s.reversed);
         if (s.mode == Slot.SLICER) { ctxT.icon(Theme.I_AUTO).accent(Theme.MODE[0]); ctxT.setOn(false); ctxT.setDim(false); }
         else if (s.mode == Slot.ARP) { ctxT.text(ARP_DIR[s.arpDir]).accent(0xFFFF4FA3); ctxT.setOn(true); ctxT.setDim(false); }
+        else if (s.mode == Slot.LOOPER) { ctxT.text("P-P").accent(Theme.MODE[1]); ctxT.setOn(s.pingPong); ctxT.setDim(false); }
+        else if (s.mode == Slot.LOOPPLAYER) { ctxT.text("STR").accent(Theme.MODE[7]); ctxT.setOn(s.stretch); ctxT.setDim(false); }
         else { ctxT.icon(Theme.I_DICE); ctxT.setOn(false); ctxT.setDim(true); }
-        if (s.mode != Slot.SLICER && wave.isEditSlices()) wave.setEditSlices(false);
+        if (s.mode != Slot.SLICER && s.mode != Slot.KEYBOARD && wave.isEditSlices()) wave.setEditSlices(false);
+        boolean divOk = s.mode == Slot.SLICER || s.mode == Slot.LOOPER || s.mode == Slot.ARP || s.mode == Slot.TAPE || s.mode == Slot.SCRATCH;
+        for (int k = 0; k < Slot.DIVS.length; k++) divTiles[k].setDim(!divOk);
+        zoomT.text(((int) wave.zoom()) + "x");
+        undoT.setDim(!engine.canUndo(sel));
         if (s.mode == Slot.ARP) { edT.text("1/" + s.arpRate).accent(0xFFFFD23F); edT.setOn(true); edT.setDim(false); }
-        else { edT.icon(Theme.I_MARK).accent(0xFFFFD23F); edT.setOn(wave.isEditSlices()); edT.setDim(s.mode != Slot.SLICER); }
+        else { edT.icon(Theme.I_MARK).accent(0xFFFFD23F); edT.setOn(wave.isEditSlices()); edT.setDim(s.mode != Slot.SLICER && s.mode != Slot.KEYBOARD); }
+        glideT.setDim(s.mode != Slot.KEYBOARD);
+        sizeS.set(s.bowSize);
         // one single Filter module: its icon shows whether it is low-pass or high-pass
         Fx.Filter flt = (Fx.Filter) (masterFx ? engine.master[Fx.FILTER] : s.fx[Fx.FILTER]);
         fxTiles[Fx.FILTER].icon(flt.highPass ? Theme.I_FILTER_HP : Theme.I_FILTER);
@@ -361,7 +384,14 @@ public final class MainActivity extends Activity {
     private void contextAction() {
         Slot s = engine.slots[sel];
         if (s.mode == Slot.ARP) { s.arpRandom = false; s.arpDir = (s.arpDir + 1) % 5; refresh(); return; }
+        if (s.mode == Slot.LOOPER) { s.pingPong = !s.pingPong; toast(s.pingPong ? "Ping-pong: o loop vai e volta" : "Ping-pong desligado"); refresh(); return; }
+        if (s.mode == Slot.LOOPPLAYER) {
+            s.stretch = !s.stretch;
+            toast(s.stretch ? "Stretch: o BPM muda o tempo sem mudar a altura (toque de novo no loop)" : "Stretch desligado: o BPM muda tempo e altura");
+            refresh(); return;
+        }
         if (s.mode != Slot.SLICER) return;
+        engine.pushUndo(sel);
         final int target = sel;
         final float sens = autoSens;
         autoSens = autoSens >= 0.8f ? 0.2f : autoSens + 0.3f;       // tap again for a different sensitivity
@@ -459,7 +489,9 @@ public final class MainActivity extends Activity {
     // ------------------------------------------------------------------ dialogs
 
     private void mainMenu() {
-        String[] items = {"Salvar projeto", "Abrir projeto", "MIDI Learn…", "Limpar mapeamentos MIDI", "Reconectar MIDI", "Sobre"};
+        String[] items = {"Salvar projeto", "Abrir projeto", "MIDI Learn…", "Limpar mapeamentos MIDI", "Reconectar MIDI",
+                "Clock MIDI externo: " + (engine.midiSync ? "ligado" : "desligado"),
+                engine.isExporting() ? "Parar e salvar gravação do mix (WAV)" : "Gravar o que está tocando em WAV (Music/GfDrps)", "Sobre"};
         new AlertDialog.Builder(this).setTitle("Gf Drps").setItems(items, (d, w) -> {
             switch (w) {
                 case 0: saveProject(); break;
@@ -467,6 +499,8 @@ public final class MainActivity extends Activity {
                 case 2: learnMenu(); break;
                 case 3: midi.clearBindings(); toast("Mapeamentos apagados"); break;
                 case 4: midi.connect(); break;
+                case 5: engine.midiSync = !engine.midiSync; toast(engine.midiSync ? "O tempo segue o clock MIDI externo (start/stop também)" : "Clock MIDI externo desligado"); break;
+                case 6: exportMix(); break;
                 default: about(); break;
             }
         }).show();
@@ -485,7 +519,7 @@ public final class MainActivity extends Activity {
         final String[] names = ProjectStore.list(this);
         if (names.length == 0) { toast("Nenhum projeto salvo"); return; }
         new AlertDialog.Builder(this).setTitle("Abrir projeto").setItems(names, (d, w) -> {
-            try { ProjectStore.load(this, engine, names[w]); refresh(); toast("Projeto carregado"); }
+            try { ProjectStore.load(this, engine, names[w]); engine.clearUndo(); refresh(); toast("Projeto carregado"); }
             catch (Exception e) { toast("Erro ao abrir: " + e.getMessage()); }
         }).show();
     }
@@ -504,7 +538,8 @@ public final class MainActivity extends Activity {
         String[] items = {"Carregar arquivo…", sl.muted ? "Reativar slot" : "Silenciar slot",
                 "Modo gate (só toca segurando): " + (sl.gate ? "ligado" : "desligado"),
                 "Duração do loop: dobrar (" + (int) sl.sampleBeats + " batidas)", "Duração do loop: metade",
-                "Recarregar som de demonstração"};
+                "Recarregar som de demonstração",
+                "Cortar o sample para início/fim (região do Keyboard)", "Exportar este slot em WAV"};
         new AlertDialog.Builder(this).setTitle("Slot " + (s + 1) + (sl.sample != null ? " – " + sl.sample.name : "")).setItems(items, (d, w) -> {
             switch (w) {
                 case 0: pickFile(); break;
@@ -512,21 +547,95 @@ public final class MainActivity extends Activity {
                 case 2: sl.gate = !sl.gate; break;
                 case 3: sl.sampleBeats = Math.min(256, sl.sampleBeats * 2); break;
                 case 4: sl.sampleBeats = Math.max(1, sl.sampleBeats / 2); break;
-                default: engine.loadSample(s, com.gfdrps.core.DemoSynth.make(s, engine.rate, engine.bpm)); break;
+                case 5: engine.loadSample(s, com.gfdrps.core.DemoSynth.make(s, engine.rate, engine.bpm)); break;
+                case 6:
+                    if (sl.regStart <= 0f && sl.regEnd >= 1f) toast("Defina início e fim no modo Keyboard (botão de marcador) e volte aqui");
+                    else { engine.trim(s); toast("Sample cortado (pode desfazer)"); }
+                    break;
+                default: exportSlot(s); break;
             }
             refresh();
         }).show();
     }
 
+    private void gestureMenu() {
+        final Slot s = engine.slots[sel];
+        if (s.gestures.state != GestureRecorder.PLAYING) { toast("Grave um gesto primeiro (●)"); return; }
+        String[] items = {"Quantizar na grade 1/16", "Quantizar na grade 1/8", "Quantizar na grade 1/4",
+                "Deslocar tudo ◀ 1/16", "Deslocar tudo ▶ 1/16",
+                "Apagar só os movimentos do pad de efeito", "Apagar só os toques da waveform"};
+        new AlertDialog.Builder(this).setTitle("Editar gesto gravado").setItems(items, (d, w) -> {
+            switch (w) {
+                case 0: engine.quantizeGestures(sel, 0.25); break;
+                case 1: engine.quantizeGestures(sel, 0.5); break;
+                case 2: engine.quantizeGestures(sel, 1.0); break;
+                case 3: engine.nudgeGestures(sel, -0.25); break;
+                case 4: engine.nudgeGestures(sel, 0.25); break;
+                case 5: engine.removeGestureKind(sel, true); break;
+                default: engine.removeGestureKind(sel, false); break;
+            }
+            toast("Gesto editado (undo desfaz)");
+        }).show();
+    }
+
+    private void exportMix() {
+        if (!engine.isExporting()) { engine.startExport(); toast("Gravando o que você ouve… abra o menu Gf de novo para parar e salvar"); return; }
+        final short[] pcm = engine.stopExport();
+        if (pcm == null) { toast("Nada gravado"); return; }
+        final String name = "GfDrps-mix-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(new java.util.Date());
+        new Thread(() -> {
+            try { String where = Exporter.saveWav(this, name, pcm, engine.rate, 2); ui.post(() -> toast("Salvo em " + where)); }
+            catch (Throwable e) { final String m = e.getMessage(); ui.post(() -> toast("Erro ao exportar: " + m)); }
+        }, "gfdrps-export").start();
+    }
+
+    private void exportSlot(int slot) {
+        final com.gfdrps.core.Sample sm = engine.slots[slot].sample;
+        if (sm == null) { toast("Slot vazio"); return; }
+        final String name = "GfDrps-slot" + (slot + 1) + "-" + new java.text.SimpleDateFormat("HHmmss", java.util.Locale.US).format(new java.util.Date());
+        new Thread(() -> {
+            try { String where = Exporter.saveSample(this, name, sm.data, sm.sampleRate); ui.post(() -> toast("Salvo em " + where)); }
+            catch (Throwable e) { final String m = e.getMessage(); ui.post(() -> toast("Erro ao exportar: " + m)); }
+        }, "gfdrps-export").start();
+    }
+
+    /** "?" shows the overlay with numbered controls (segure o "?" para o texto completo). */
     private void help() {
+        if (helpOverlay != null) { closeHelp(); return; }
+        Slot s = engine.slots[sel];
+        helpOverlay = new HelpOverlay(this).legendIn(wave).onClose(this::closeHelp)
+                .heading("Gf Drps v" + versionName() + " — " + Slot.MODE_NAMES[s.mode]);
+        helpOverlay.add(gfT, "Menu: projetos, MIDI, clock, exportar").add(metroT, "Metrônomo").add(bpmView, "BPM: arraste na horizontal ou toque o ritmo")
+                .add(masterS, "Volume master").add(stopT, "Para tudo (vozes, loops, gestos)").add(helpT, "Ajuda (segure: texto)")
+                .add(fileT, "Carregar arquivo no slot").add(revT, "Inverter o sample").add(undoT, "Desfazer (sample, fatias, região, gestos)")
+                .add(modeTiles[0], "Modos: Slicer · Looper · Bow · Tape · Scratch · Arp · Keys · Loop")
+                .add(volS, "Volume do slot").add(attS, "Attack").add(decS, "Decay").add(susS, "Sustain").add(relS, "Release").add(panS, "Pan").add(sizeS, "Tamanho do grão (Bow)")
+                .add(divTiles[0], "Fatias / grade: 0 4 8 16 32").add(ctxT, "Ação do modo: auto-fatiar · direção · ping-pong · stretch")
+                .add(edT, "Editar fatias (Slicer) / região (Keys) / taxa (Arp)").add(trValT, "Transposição").add(glideT, "Legato (Keys)")
+                .add(recGestT, "Gravar gestos: inicia no 1º toque (segure: editar)").add(barsT, "Compassos do gesto").add(infT, "Sustentar (∞)")
+                .add(lkT, "Latch: o som continua ao soltar/trocar de modo").add(qT, "Quantizar na grade (segure: 1/4–1/32)")
+                .add(autoT, "Slicer: toca as fatias sozinho").add(shufT, "Shuffle do auto-play").add(zoomT, "Zoom da waveform (barra no topo rola)")
+                .add(pad, "Pad XY do efeito (também gravado nos gestos)").add(fxTiles[0], "Efeitos (filtro: toque 2x = LP/HP)")
+                .add(latchT, "Hold: efeito fica ligado").add(syncT, "Delay sincronizado com o BPM").add(masterFxT, "M: efeito no master")
+                .add(playT, "Play / Stop").add(strips[0], "Slots (segure: menu, cortar, exportar)").add(micT, "Gravar do microfone").add(mixT, "Resample do mix");
+        ((ViewGroup) getWindow().getDecorView()).addView(helpOverlay, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    private void closeHelp() {
+        if (helpOverlay == null) return;
+        ((ViewGroup) getWindow().getDecorView()).removeView(helpOverlay);
+        helpOverlay = null;
+    }
+
+    private void helpText() {
         String t = "Slicer – toque numa fatia; altura = volume. Botão de marcador: editar fatias (toque = novo marcador, arraste = mover, toque no marcador = apagar, segurar o botão = voltar à grade). A estrela acha as batidas sozinha.\n"
-                + "Looper – dois dedos definem o loop; cruzar os dedos toca em reverse; 4/8/16/32 prende os marcadores na grade.\n"
-                + "Bow – segure: um grão do som vira textura contínua.\n"
-                + "Tape – arraste p/ direita acelera, p/ esquerda inverte; soltar = tape stop.\n"
+                + "Looper – dois dedos definem o loop; cruzar os dedos toca em reverse; P-P liga o ping-pong (vai e volta); 4/8/16/32 prende os marcadores na grade.\n"
+                + "Bow – segure: um grão do som vira textura contínua; posição = x, volume = altura do dedo, slider azul = tamanho do grão; até 4 notas.\n"
+                + "Tape – arraste p/ direita acelera, p/ esquerda inverte; soltar = tape stop. Com 4/8/16/32 a velocidade anda em degraus.\n"
                 + "Scratch – arraste o dedo como um vinil.\n"
                 + "Arpeggiator – segure dedos: dispara as fatias sob os dedos no ritmo do BPM; botão rosa = direção (UP, DN, U-D, RND, ORD), botão amarelo = taxa (1/4–1/32); 0/4/8/16/32 = nº de fatias.\n"
-                + "Keyboard – teclas cromáticas (∞ sustenta, curva = legato).\n"
-                + "Loop Player – toque liga/desliga o loop sincronizado.\n\n"
+                + "Keyboard – teclas cromáticas (∞ sustenta, curva = legato); o botão de marcador edita início/fim do sample (use o zoom).\n"
+                + "Loop Player – o primeiro toque liga o loop sincronizado; STR (stretch) deixa o BPM mudar o tempo sem mudar a altura.\n\n"
                 + "◀| (esquerda) inverte o sample. Filtro: toque de novo no ícone do filtro para alternar passa-baixas/passa-altas (o ícone muda).\n■ para tudo: vozes, loops e gestos; ▶ retoma.\n"
                 + "Sliders: volume · attack · decay · sustain · release · pan.\n"
                 + "● arma a gravação de gestos: ela começa sozinha no primeiro toque (waveform ou pad de efeito), dura N compassos e repete em loop.\n"

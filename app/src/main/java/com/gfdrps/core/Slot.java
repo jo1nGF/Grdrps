@@ -18,6 +18,14 @@ public final class Slot {
     public volatile boolean infinite = false, gate = false, legato = false, arpRandom = false, muted = false;
     public volatile double sampleBeats = 8;  // length of the sample in beats (loop player sync)
     public volatile boolean reversed = false;
+    /** Looper: loop bounces back and forth between the fingers. */
+    public volatile boolean pingPong = false;
+    /** Bow: size of the grain window, 0 (tiny, granular) .. 1 (long, pad-like). Height of the finger = volume. */
+    public volatile float bowSize = 0.45f;
+    /** Loop Player / transpose without changing the other: tempo lock keeps the pitch (time-stretch). */
+    public volatile boolean stretch = false;
+    /** Keyboard (and trim) region, 0..1 of the sample. */
+    public volatile float regStart = 0f, regEnd = 1f;
     /** Manual slice boundaries (0..1, sorted, interior only). null = even grid from {@link #div}. */
     public volatile float[] markers = null;
 
@@ -82,10 +90,46 @@ public final class Slot {
         sample = s;
         markers = null;
         reversed = false;
+        regStart = 0f; regEnd = 1f;
         if (s != null) {
             double dur = s.length() / (double) s.sampleRate;
             sampleBeats = Math.max(1, Math.round(dur * bpm / 60.0));
         }
+    }
+
+    /** Undo support: everything an edit can change about the sample. */
+    public static final class Snapshot {
+        public final Sample sample; public final float[] markers; public final boolean reversed; public final float regStart, regEnd;
+        Snapshot(Sample s, float[] m, boolean r, float a, float b) { sample = s; markers = m; reversed = r; regStart = a; regEnd = b; }
+    }
+
+    public Snapshot snapshot() { return new Snapshot(sample, markers, reversed, regStart, regEnd); }
+
+    public void restore(Snapshot n) {
+        stopAll();
+        sample = n.sample; markers = n.markers; reversed = n.reversed; regStart = n.regStart; regEnd = n.regEnd;
+    }
+
+    /** Cuts the sample to the region (regStart..regEnd). Markers inside the region are kept and rescaled. */
+    public boolean trimToRegion() {
+        Sample s = sample;
+        if (s == null) return false;
+        int n = s.length();
+        int a = Math.max(0, (int) (regStart * n)), b = Math.min(n, (int) (regEnd * n));
+        if (b - a < 64 || (a == 0 && b == n)) return false;
+        float[] d = java.util.Arrays.copyOfRange(s.data, a, b);
+        float[] m = markers;
+        float[] nm = null;
+        if (m != null) {
+            float[] t = new float[m.length]; int c = 0;
+            for (float v : m) { double p = (v * n - a) / (double) (b - a); if (p > 0.0 && p < 1.0) t[c++] = (float) p; }
+            nm = cleanMarkers(java.util.Arrays.copyOf(t, c));
+        }
+        stopAll();
+        sample = new Sample(d, s.sampleRate, s.name);
+        markers = nm;
+        regStart = 0f; regEnd = 1f;
+        return true;
     }
 
     /** Plays the sample backwards from now on (toggle: calling it again restores it). */
@@ -170,6 +214,8 @@ public final class Slot {
         for (int i = 0; i < tVoice.length; i++) tVoice[i] = null;
     }
 
+    private float bowGrain() { float b = bowSize; return (float) ((0.012 + b * b * 0.35) * rate); }
+
     private double pitchRatio() { return Math.pow(2.0, transpose / 12.0); }
     private int sliceCount() { int d = div; return d <= 0 ? 8 : d; }
 
@@ -240,6 +286,8 @@ public final class Slot {
         v.setEnv(attack, decay, sustain, release);
         v.speed = pitchRatio();
         v.loop = false;
+        v.pingPong = false;
+        v.pitch = 1.0;
         v.vel = 1f;
         return v;
     }
@@ -314,12 +362,15 @@ public final class Slot {
                 updateLooper(frame, s);
                 break;
             case BOW: {
+                int live = 0; Voice oldest = null;                      // up to 4 notes at once
+                for (Voice o : voices) if (o.active && o.kind == Voice.BOW && !o.releasing) { live++; if (oldest == null || o.startedAt < oldest.startedAt) oldest = o; }
+                if (live >= 4 && oldest != null) oldest.fastRelease();
                 Voice v = prepare(Voice.BOW, frame);
                 v.center = x * (len - 1);
-                v.grainLen = (float) ((0.03 + (1.0 - y) * 0.17) * rate);
+                v.grainLen = bowGrain();
                 v.gPos[0] = v.gPos[1] = v.center;
                 v.gPh[0] = 0f; v.gPh[1] = 0.5f;
-                v.vel = 0.7f;
+                v.vel = 0.2f + 0.6f * (1f - y);                          // height = volume
                 v.trigger(id, frame);
                 tVoice[k] = v;
                 break;
@@ -355,7 +406,8 @@ public final class Slot {
                 int key = Math.min(KEYS - 1, (int) (x * KEYS));
                 Voice v = prepare(Voice.PLAY, frame);
                 v.speed = Math.pow(2.0, (key - KEYS / 2 + transpose) / 12.0);
-                v.start = 0; v.end = len; v.pos = 0;
+                double rs = Math.min(regStart, regEnd - 0.002f) * len, re = Math.max(regEnd, regStart + 0.002f) * len;
+                v.start = Math.max(0, rs); v.end = Math.min(len, re); v.pos = v.start;
                 v.loop = infinite;
                 v.vel = vel;
                 v.trigger(id, frame);
@@ -364,16 +416,17 @@ public final class Slot {
             }
             case LOOPPLAYER: {
                 Voice running = null;
-                for (Voice v : voices) if (v.active && v.kind == Voice.PLAY && v.loop && !v.releasing && v.start == 0 && v.end == len && v.touchId == -2) running = v;
+                for (Voice v : voices) if (v.active && (v.kind == Voice.PLAY || v.kind == Voice.STRETCH) && v.loop && !v.releasing && v.start == 0 && v.end == len && v.touchId == -2) running = v;
                 if (running != null && !gate) {
                     running.release();
                 } else {
-                    Voice v = prepare(Voice.PLAY, frame);
+                    Voice v = prepare(stretch ? Voice.STRETCH : Voice.PLAY, frame);
                     v.start = 0; v.end = len; v.loop = true;
                     v.vel = 0.9f;
                     double phase = (beat / sampleBeats) % 1.0;
                     v.pos = phase * len;
-                    v.speed = pitchRatio();
+                    v.pitch = pitchRatio();
+                    v.speed = stretch ? 1.0 : pitchRatio();
                     v.trigger(-2, frame);   // -2 marks a loop-player voice (tempo-synced in render)
                     tVoice[k] = v;
                     requestTransport = true;        // the very first touch starts it, no need to press play
@@ -395,15 +448,22 @@ public final class Slot {
             case BOW:
                 if (v != null && v.active) {
                     v.center = x * (len - 1);
-                    v.grainLen = (float) ((0.03 + (1.0 - y) * 0.17) * rate);
+                    v.grainLen = bowGrain();
+                    v.vel = 0.2f + 0.6f * (1f - y);
                 }
                 break;
             case TAPE:
-                if (v != null && v.active) { v.speedTgt = v.baseSpeed + (x - v.center) * 6.0; v.glide = 0.003f; }
+                if (v != null && v.active) {
+                    double dx = x - v.center;
+                    if (div > 0) dx = Math.round(dx * div) / (double) div;       // marker presets: the speed moves in steps
+                    v.speedTgt = v.baseSpeed + dx * 6.0; v.glide = 0.003f;
+                }
                 break;
             case SCRATCH:
                 if (v != null && v.active) {
-                    double t = v.scrBase + (x - v.center) * v.scrSpan;
+                    double dxs = x - v.center;
+                    if (div > 0) dxs = Math.round(dxs * div) / (double) div;     // marker presets: the playhead hops between steps
+                    double t = v.scrBase + dxs * v.scrSpan;
                     v.scratchTo(Math.max(0, Math.min(len - 1, t)));
                 }
                 break;
@@ -479,12 +539,16 @@ public final class Slot {
         if (!(lv != null && lv.active && lv.touchId == -3 && !lv.releasing)) {
             lv = prepare(Voice.PLAY, frame);
             lv.loop = true; lv.vel = 0.9f;
-            lv.start = st; lv.end = en; lv.speed = sp;
+            lv.start = st; lv.end = en; lv.speed = sp; lv.speedTgt = sp;
+            lv.pingPong = pingPong;
             lv.pos = reverse ? en - 1 : st;
             lv.trigger(-3, frame);
             looperV = lv;
         } else {
-            lv.speedTgt = sp; lv.glide = 0.02f;       // direction change glides through zero, no click
+            lv.pingPong = pingPong;
+            if (pingPong) sp = Math.copySign(Math.abs(sp), lv.speedTgt != 0 ? lv.speedTgt : sp);     // the bounce owns the direction
+            lv.speedTgt = sp; lv.glide = pingPong ? 0f : 0.02f;       // direction change glides through zero, no click
+            if (pingPong) lv.speed = sp;
             lv.setRegion(st, en);
         }
         for (int i = 0; i < tCount; i++) tVoice[i] = lv;
@@ -703,7 +767,8 @@ public final class Slot {
             if (v.touchId == -2 && s != null) {
                 if (!playing) { v.release(); continue; }
                 double dur = s.length() / (double) s.sampleRate;
-                v.speed = bpm * dur / (60.0 * sampleBeats) * pitchRatio();   // lock loop to project tempo
+                if (v.kind == Voice.STRETCH) { v.speed = bpm * dur / (60.0 * sampleBeats); v.pitch = pitchRatio(); }   // tempo lock, pitch untouched
+                else v.speed = bpm * dur / (60.0 * sampleBeats) * pitchRatio();   // lock loop to project tempo
             }
             if (v.kind == Voice.PLAY && mode == KEYBOARD && legato) { /* speed set in move() */ }
             v.render(chunkBuf, n);

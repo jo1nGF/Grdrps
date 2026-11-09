@@ -32,6 +32,31 @@ public final class WaveView extends View {
         setBackgroundColor(Theme.WAVE_BG);
     }
 
+    // ---- zoom (Slicer / Looper / Bow / Arp positions, and region editing in Keyboard)
+    private float zoom = 1f, viewStart = 0f;
+    private final float[] vMin = new float[Sample.PEAKS], vMax = new float[Sample.PEAKS];
+    private int panPointer = -1;
+    private float panGrabX, panGrabStart;
+
+    private boolean zoomable(int mode) {
+        return mode == Slot.SLICER || mode == Slot.LOOPER || mode == Slot.BOW || mode == Slot.ARP || (mode == Slot.KEYBOARD && editSlices);
+    }
+    private float zEff() { return zoomable(engine.slots[slotIndex].mode) ? zoom : 1f; }
+    private float vsEff() { return zEff() > 1f ? viewStart : 0f; }
+    /** Screen x (0..1) to position in the sample (0..1). */
+    private float toSample(float xn) { return vsEff() + xn / zEff(); }
+    /** Sample position (0..1) to screen x in pixels. */
+    private float vx(float pos, float w) { return (pos - vsEff()) * zEff() * w; }
+
+    public float zoom() { return zoom; }
+    public void cycleZoom() {
+        float centre = viewStart + 0.5f / zoom;
+        zoom = zoom >= 16f ? 1f : zoom * 2f;
+        viewStart = zoom == 1f ? 0f : Math.max(0f, Math.min(1f - 1f / zoom, centre - 0.5f / zoom));
+        invalidate();
+    }
+    public void resetZoom() { zoom = 1f; viewStart = 0f; invalidate(); }
+
     // ---- manual slice editing (Slicer mode)
     private boolean editSlices;
     private float[] work;
@@ -52,11 +77,12 @@ public final class WaveView extends View {
         float w = Math.max(1, getWidth());
         Slot sl = engine.slots[slotIndex];
         int a = e.getActionMasked();
-        float x = clamp(e.getX() / w);
+        float x = clamp(toSample(clamp(e.getX() / w)));
         if (a == MotionEvent.ACTION_DOWN) {
             getParent().requestDisallowInterceptTouchEvent(true);
+            engine.pushUndo(slotIndex);
             float[] cur = baseMarkers();
-            int near = -1; float best = 0.03f;
+            int near = -1; float best = 0.03f / zEff();
             for (int i = 0; i < cur.length; i++) if (Math.abs(cur[i] - x) < best) { best = Math.abs(cur[i] - x); near = i; }
             if (near >= 0) { work = cur; grab = near; grabbedExisting = true; }
             else {
@@ -72,6 +98,7 @@ public final class WaveView extends View {
             downPx = e.getX(); moved = false;
         } else if (a == MotionEvent.ACTION_MOVE && grab >= 0 && work != null) {
             if (Math.abs(e.getX() - downPx) > 14) moved = true;
+            // (positions above are already mapped through the zoom)
             if (moved || !grabbedExisting) {
                 float lo = grab > 0 ? work[grab - 1] + 0.006f : 0.004f;
                 float hi = grab < work.length - 1 ? work[grab + 1] - 0.006f : 0.996f;
@@ -97,6 +124,54 @@ public final class WaveView extends View {
         return q > 0 ? Math.round(x * q) / (float) q : x;
     }
 
+    /** While zoomed, a thin bar along the top edge scrolls the view (the rest of the surface plays as usual). */
+    private boolean panTouch(MotionEvent e) {
+        float w = Math.max(1, getWidth()), h = Math.max(1, getHeight());
+        int act = e.getActionMasked();
+        if (act == MotionEvent.ACTION_DOWN || act == MotionEvent.ACTION_POINTER_DOWN) {
+            int idx = e.getActionIndex();
+            if (e.getY(idx) < h * 0.09f && panPointer < 0) {
+                panPointer = e.getPointerId(idx);
+                panGrabX = e.getX(idx); panGrabStart = viewStart;
+                getParent().requestDisallowInterceptTouchEvent(true);
+                return true;
+            }
+            return false;
+        }
+        if (panPointer < 0) return false;
+        int pi = e.findPointerIndex(panPointer);
+        if (act == MotionEvent.ACTION_MOVE && pi >= 0) {
+            float dx = (e.getX(pi) - panGrabX) / w;                       // full bar width = whole sample
+            viewStart = Math.max(0f, Math.min(1f - 1f / zoom, panGrabStart + dx));
+            invalidate();
+            return true;
+        }
+        if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL || (act == MotionEvent.ACTION_POINTER_UP && e.getPointerId(e.getActionIndex()) == panPointer)) {
+            panPointer = -1;
+            return true;
+        }
+        return false;
+    }
+
+    // ---- Keyboard / trim region: two handles for start and end of the playable part
+    private int regGrab = -1;
+    private boolean regionTouch(MotionEvent e) {
+        float w = Math.max(1, getWidth());
+        Slot sl = engine.slots[slotIndex];
+        int a = e.getActionMasked();
+        float x = clamp(toSample(clamp(e.getX() / w)));
+        if (a == MotionEvent.ACTION_DOWN) {
+            getParent().requestDisallowInterceptTouchEvent(true);
+            engine.pushUndo(slotIndex);
+            regGrab = Math.abs(x - sl.regStart) <= Math.abs(x - sl.regEnd) ? 0 : 1;
+        } else if (a == MotionEvent.ACTION_MOVE && regGrab >= 0) {
+            if (regGrab == 0) engine.setRegion(slotIndex, Math.min(x, sl.regEnd - 0.004f), sl.regEnd);
+            else engine.setRegion(slotIndex, sl.regStart, Math.max(x, sl.regStart + 0.004f));
+        } else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) regGrab = -1;
+        invalidate();
+        return true;
+    }
+
     public void setSlot(int s) {
         if (s == slotIndex) return;
         releaseAll();
@@ -114,9 +189,13 @@ public final class WaveView extends View {
     @Override protected void onDetachedFromWindow() { releaseAll(); super.onDetachedFromWindow(); }
 
     @Override public boolean onTouchEvent(MotionEvent e) {
-        if (editSlices && engine.slots[slotIndex].mode == Slot.SLICER) return editTouch(e);
+        int curMode = engine.slots[slotIndex].mode;
+        if (zEff() > 1f && panTouch(e)) return true;
+        if (editSlices && curMode == Slot.SLICER) return editTouch(e);
+        if (editSlices && curMode == Slot.KEYBOARD) return regionTouch(e);
         float w = Math.max(1, getWidth()), h = Math.max(1, getHeight());
         int act = e.getActionMasked();
+        final boolean mapX = curMode == Slot.SLICER || curMode == Slot.LOOPER || curMode == Slot.BOW || curMode == Slot.ARP;
         if (act == MotionEvent.ACTION_DOWN && android.os.Build.VERSION.SDK_INT >= 26) requestUnbufferedDispatch(e);   // touch samples delivered immediately, not batched to the frame
         switch (act) {
             case MotionEvent.ACTION_DOWN:
@@ -127,7 +206,7 @@ public final class WaveView extends View {
                 if (id < MAXP) {
                     down[id] = true;
                     fx[id] = clamp(e.getX(idx) / w); fy[id] = clamp(e.getY(idx) / h); sx[id] = fx[id];
-                    engine.touch(slotIndex, 0, id, fx[id], fy[id]);
+                    engine.touch(slotIndex, 0, id, mapX ? clamp(toSample(fx[id])) : fx[id], fy[id]);
                 }
                 break;
             }
@@ -138,7 +217,7 @@ public final class WaveView extends View {
                     float nx = clamp(e.getX(i) / w), ny = clamp(e.getY(i) / h);
                     if (nx != fx[id] || ny != fy[id]) {
                         fx[id] = nx; fy[id] = ny;
-                        engine.touch(slotIndex, 1, id, nx, ny);
+                        engine.touch(slotIndex, 1, id, mapX ? clamp(toSample(nx)) : nx, ny);
                     }
                 }
                 break;
@@ -177,10 +256,25 @@ public final class WaveView extends View {
             }
             float mid = h / 2f, amp = h * 0.46f;
             int n = Sample.PEAKS;
+            float[] pmax = sm.peakMax, pmin = sm.peakMin;
+            float z = zEff();
+            if (z > 1f) {                                         // zoomed: peaks of the visible part only
+                float v0 = vsEff(), v1 = v0 + 1f / z;
+                int len = sm.length();
+                for (int i = 0; i < n; i++) {
+                    int a0 = (int) ((v0 + (v1 - v0) * i / n) * len), a1 = (int) ((v0 + (v1 - v0) * (i + 1) / n) * len);
+                    a0 = Math.max(0, Math.min(len - 1, a0)); a1 = Math.max(a0 + 1, Math.min(len, a1));
+                    int stp = Math.max(1, (a1 - a0) / 24);
+                    float lo = 0f, hi = 0f;
+                    for (int k = a0; k < a1; k += stp) { float d = sm.data[k]; if (d > hi) hi = d; if (d < lo) lo = d; }
+                    vMax[i] = hi; vMin[i] = lo;
+                }
+                pmax = vMax; pmin = vMin;
+            }
             for (int i = 0; i < n; i++) {
                 float x = (i + 0.5f) * w / n;
-                pts[i * 4] = x; pts[i * 4 + 1] = mid - sm.peakMax[i] * amp;
-                pts[i * 4 + 2] = x; pts[i * 4 + 3] = mid - sm.peakMin[i] * amp - 1f;
+                pts[i * 4] = x; pts[i * 4 + 1] = mid - pmax[i] * amp;
+                pts[i * 4 + 2] = x; pts[i * 4 + 3] = mid - pmin[i] * amp - 1f;
             }
             p.setShader(shader);
             p.setStyle(Paint.Style.STROKE);
@@ -198,7 +292,7 @@ public final class WaveView extends View {
             if (s.arpFlash > 0.02f && s.arpSlice >= 0) {
                 float[] b = s.sliceBoundaries();
                 int i = Math.max(0, Math.min(b.length, s.arpSlice));       // the slice count may have just changed
-                float x0 = (i == 0 ? 0f : b[i - 1]) * w, x1 = (i >= b.length ? 1f : b[i]) * w;
+                float x0 = vx(i == 0 ? 0f : b[i - 1], w), x1 = vx(i >= b.length ? 1f : b[i], w);
                 p.setStyle(Paint.Style.FILL);
                 p.setColor(((int) (s.arpFlash * 110) << 24) | 0xFF4FA3);
                 c.drawRect(x0, 0, x1, h, p);
@@ -251,7 +345,33 @@ public final class WaveView extends View {
         p.setColor(0xDDFFFFFF);
         for (int i = 0; i < Slot.VOICES; i++) {
             float ph = s.playheads[i];
-            if (ph >= 0f && ph <= 1f && mode != Slot.TAPE) c.drawLine(ph * w, 0, ph * w, h, p);
+            if (ph >= 0f && ph <= 1f && mode != Slot.TAPE) { float px = vx(ph, w); if (px >= 0 && px <= w) c.drawLine(px, 0, px, h, p); }
+        }
+
+        // Keyboard region handles (start / end) and the zoom scroll bar
+        if (mode == Slot.KEYBOARD && (editSlices || s.regStart > 0f || s.regEnd < 1f)) {
+            float xa = vx(s.regStart, w), xb = vx(s.regEnd, w);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0x88000000);
+            if (xa > 0) c.drawRect(0, 0, Math.min(w, xa), h, p);
+            if (xb < w) c.drawRect(Math.max(0, xb), 0, w, h, p);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(editSlices ? 4f : 2f);
+            p.setColor(0xFFFFD23F);
+            c.drawLine(xa, 0, xa, h, p);
+            c.drawLine(xb, 0, xb, h, p);
+            if (editSlices) {
+                p.setStyle(Paint.Style.FILL);
+                p.setTextSize(Math.min(w, h) * 0.06f);
+                c.drawText("REGIÃO: arraste início e fim · use o zoom para precisão", w * 0.02f, h * 0.96f, p);
+            }
+        }
+        if (zEff() > 1f) {
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0x44FFFFFF);
+            c.drawRect(0, 0, w, h * 0.04f, p);
+            p.setColor(0xCCFFD23F);
+            c.drawRect(vsEff() * w, 0, (vsEff() + 1f / zEff()) * w, h * 0.04f, p);
         }
 
         // gesture recorder progress bar along the top edge
@@ -272,13 +392,15 @@ public final class WaveView extends View {
         p.setStyle(Paint.Style.STROKE);
         p.setStrokeWidth(manual || editSlices ? 3f : 1.5f);
         p.setColor(editSlices ? 0xFFFFD23F : (manual ? 0xAAFFFFFF : 0x33FFFFFF));
-        for (float v : b) c.drawLine(v * w, 0, v * w, h, p);
+        for (float v : b) { float px = vx(v, w); if (px >= 0 && px <= w) c.drawLine(px, 0, px, h, p); }
         if (editSlices) {
             p.setStyle(Paint.Style.FILL);
             float t = Math.min(w, h) * 0.035f;
             for (float v : b) {
+                float px = vx(v, w);
+                if (px < 0 || px > w) continue;
                 path.reset();
-                path.moveTo(v * w - t, 0); path.lineTo(v * w + t, 0); path.lineTo(v * w, t * 1.6f); path.close();
+                path.moveTo(px - t, 0); path.lineTo(px + t, 0); path.lineTo(px, t * 1.6f); path.close();
                 c.drawPath(path, p);
             }
             p.setColor(0xCCFFD23F);

@@ -51,6 +51,69 @@ public final class GestureRecorder {
         state = n > 0 ? PLAYING : IDLE;
     }
 
+    /** Undo support: a copy of the recorded take. */
+    public static final class Snap {
+        final int bars, count, state; final double[] ph; final int[] ty, ids; final float[] px, py;
+        Snap(int b, int c, int st, double[] a, int[] t, int[] i, float[] x, float[] y) { bars = b; count = c; state = st; ph = a; ty = t; ids = i; px = x; py = y; }
+    }
+    public Snap snap() {
+        int st = state == PLAYING ? PLAYING : IDLE;
+        return new Snap(bars, count, st, java.util.Arrays.copyOf(phase, count), java.util.Arrays.copyOf(type, count),
+                java.util.Arrays.copyOf(id, count), java.util.Arrays.copyOf(x, count), java.util.Arrays.copyOf(y, count));
+    }
+    public void restore(Snap s, Emitter em) {
+        releaseHeld(em);
+        if (s.state == PLAYING && s.count > 0) load(s.bars, s.ph, s.ty, s.ids, s.px, s.py);
+        else { count = 0; state = IDLE; }
+    }
+
+    // ---- editing a recorded take (all phases are in beats from the start of the loop)
+    private void sortEvents() {
+        Integer[] o = new Integer[count];
+        for (int i = 0; i < count; i++) o[i] = i;
+        java.util.Arrays.sort(o, (a, b) -> Double.compare(phase[a], phase[b]));
+        double[] p2 = new double[phase.length]; int[] t2 = new int[type.length], i2 = new int[id.length]; float[] x2 = new float[x.length], y2 = new float[y.length];
+        for (int i = 0; i < count; i++) { int k = o[i]; p2[i] = phase[k]; t2[i] = type[k]; i2[i] = id[k]; x2[i] = x[k]; y2[i] = y[k]; }
+        phase = p2; type = t2; id = i2; x = x2; y = y2;
+    }
+
+    /** Snaps every event to a grid of `gridBeats` (0.25 = 1/16 note). Moves keep their order relative to their finger's down/up. */
+    public void quantize(double gridBeats, Emitter em) {
+        if (state != PLAYING || count == 0) return;
+        releaseHeld(em);
+        double len = bars * 4.0;
+        for (int i = 0; i < count; i++) {
+            double q = Math.round(phase[i] / gridBeats) * gridBeats;
+            phase[i] = Math.max(0.0, Math.min(len - 1e-6, q));
+        }
+        sortEvents();
+    }
+
+    /** Moves the whole take by deltaBeats (wraps around the loop). */
+    public void nudge(double deltaBeats, Emitter em) {
+        if (state != PLAYING || count == 0) return;
+        releaseHeld(em);
+        double len = bars * 4.0;
+        for (int i = 0; i < count; i++) { double p = (phase[i] + deltaBeats) % len; if (p < 0) p += len; phase[i] = p; }
+        sortEvents();
+    }
+
+    /** Removes the events of the effect pad (fx = true) or of the waveform fingers (fx = false). */
+    public int removeKind(boolean fx, Emitter em) {
+        if (state != PLAYING) return 0;
+        releaseHeld(em);
+        int w = 0;
+        for (int i = 0; i < count; i++) {
+            boolean isFx = type[i] >= 3;
+            if (isFx == fx) continue;
+            phase[w] = phase[i]; type[w] = type[i]; id[w] = id[i]; x[w] = x[i]; y[w] = y[i]; w++;
+        }
+        int removed = count - w;
+        count = w;
+        if (count == 0) state = IDLE;
+        return removed;
+    }
+
     // read-only view of the take, for saving
     public int bars() { return bars; }
     public double phaseAt(int i) { return phase[i]; }
