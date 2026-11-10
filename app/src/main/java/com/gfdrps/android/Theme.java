@@ -25,7 +25,8 @@ public final class Theme {
     public static final int I_SLICER = 0, I_LOOPER = 1, I_BOW = 2, I_TAPE = 3, I_SCRATCH = 4, I_ARP = 5, I_KEYS = 6,
             I_LOOPPLAY = 7, I_DIST = 8, I_FILTER = 9, I_AMP = 10, I_DELAY = 11, I_REVERB = 12, I_FILE = 13,
             I_STOP = 14, I_PLAY = 15, I_REC = 16, I_METRO = 17, I_HELP = 18, I_GATE = 19, I_GLIDE = 20, I_DICE = 21,
-            I_LOOPINF = 22, I_CLEAR = 23, I_MIX = 24, I_MIC = 25, I_REVERSE = 26, I_MARK = 27, I_AUTO = 28, I_FILTER_HP = 29;
+            I_LOOPINF = 22, I_CLEAR = 23, I_MIX = 24, I_MIC = 25, I_REVERSE = 26, I_MARK = 27, I_AUTO = 28, I_FILTER_HP = 29,
+            I_VOL = 30, I_ATT = 31, I_DEC = 32, I_SUS = 33, I_REL = 34, I_PAN = 35, I_GRAIN = 36;
 
     private static final Path P = new Path();
     private static final RectF R = new RectF();
@@ -190,6 +191,41 @@ public final class Theme {
                 P.quadTo(cx - r * 0.2f, cy - r * 0.9f, cx - r * 0.3f, cy - r * 0.2f);
                 P.lineTo(cx - r, cy + r * 0.8f);
                 c.drawPath(P, p);
+                break;
+            case I_VOL:       // speaker with waves
+                P.moveTo(cx - r * 0.9f, cy - r * 0.35f); P.lineTo(cx - r * 0.45f, cy - r * 0.35f); P.lineTo(cx, cy - r * 0.85f);
+                P.lineTo(cx, cy + r * 0.85f); P.lineTo(cx - r * 0.45f, cy + r * 0.35f); P.lineTo(cx - r * 0.9f, cy + r * 0.35f); P.close();
+                c.drawPath(P, p);
+                R.set(cx - r * 0.3f, cy - r * 0.5f, cx + r * 0.5f, cy + r * 0.5f); c.drawArc(R, -50, 100, false, p);
+                R.set(cx - r * 0.3f, cy - r * 0.9f, cx + r * 0.95f, cy + r * 0.9f); c.drawArc(R, -50, 100, false, p);
+                break;
+            case I_ATT:       // ramp up
+                P.moveTo(cx - r, cy + r * 0.8f); P.lineTo(cx + r * 0.5f, cy - r * 0.8f); P.lineTo(cx + r * 0.5f, cy + r * 0.8f);
+                c.drawPath(P, p);
+                break;
+            case I_DEC:       // peak falling to a plateau
+                P.moveTo(cx - r, cy - r * 0.8f); P.lineTo(cx - r * 0.2f, cy - r * 0.8f); P.lineTo(cx + r * 0.4f, cy + r * 0.1f); P.lineTo(cx + r, cy + r * 0.1f);
+                c.drawPath(P, p);
+                break;
+            case I_SUS:       // flat level
+                c.drawLine(cx - r, cy, cx + r, cy, p);
+                c.drawLine(cx - r, cy - r * 0.5f, cx - r, cy + r * 0.5f, p);
+                c.drawLine(cx + r, cy - r * 0.5f, cx + r, cy + r * 0.5f, p);
+                break;
+            case I_REL:       // fade out
+                P.moveTo(cx - r, cy - r * 0.5f); P.quadTo(cx, cy - r * 0.4f, cx + r, cy + r * 0.8f);
+                c.drawPath(P, p);
+                break;
+            case I_PAN:       // L <-> R arrows
+                c.drawLine(cx - r, cy, cx + r, cy, p);
+                c.drawLine(cx - r, cy, cx - r * 0.5f, cy - r * 0.45f, p); c.drawLine(cx - r, cy, cx - r * 0.5f, cy + r * 0.45f, p);
+                c.drawLine(cx + r, cy, cx + r * 0.5f, cy - r * 0.45f, p); c.drawLine(cx + r, cy, cx + r * 0.5f, cy + r * 0.45f, p);
+                break;
+            case I_GRAIN:     // scattered grains
+                p.setStyle(Paint.Style.FILL);
+                c.drawCircle(cx - r * 0.6f, cy - r * 0.4f, r * 0.2f, p); c.drawCircle(cx + r * 0.1f, cy - r * 0.6f, r * 0.2f, p);
+                c.drawCircle(cx + r * 0.7f, cy, r * 0.2f, p); c.drawCircle(cx - r * 0.2f, cy + r * 0.2f, r * 0.2f, p);
+                c.drawCircle(cx + r * 0.3f, cy + r * 0.65f, r * 0.2f, p); c.drawCircle(cx - r * 0.7f, cy + r * 0.7f, r * 0.2f, p);
                 break;
             case I_REVERSE:
                 c.drawLine(cx + r, cy, cx - r * 0.9f, cy, p);

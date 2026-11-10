@@ -15,6 +15,7 @@ public final class Engine {
     public volatile int slotCount = START_SLOTS;
     public volatile double bpm = 120.0;
     public volatile float masterVolume = 0.8f;
+    public final Dynamics dyn;
     public volatile boolean playing = true, metronome = false;
     /** FX pad hold: when set, letting go of the pad leaves the effect running. */
     public volatile boolean fxHold = false;
@@ -48,6 +49,7 @@ public final class Engine {
         this.rate = rate;
         for (int i = 0; i < SLOTS; i++) slots[i] = new Slot(rate);
         for (int i = 0; i < Fx.COUNT; i++) master[i] = Fx.create(i, rate);
+        dyn = new Dynamics(rate);
         for (int i = 0; i < START_SLOTS; i++) slots[i].setSample(DemoSynth.make(i, rate, bpm), bpm);
     }
 
@@ -253,6 +255,22 @@ public final class Engine {
         post(() -> slots[slot].gestures.arm(beatAcc, bars));
     }
 
+    /**
+     * The gesture record button. Idle: arm a new take. Armed/recording: finish it now (it is kept and plays back).
+     * Playing: overdub a new layer on top (undo removes it). Overdubbing: stop the layer. Returns a short code for the UI:
+     * 0 armed, 1 take finished, 2 overdub started, 3 overdub stopped.
+     */
+    public int gestureButton(int slot, int bars) {
+        final GestureRecorder g = slots[slot].gestures;
+        switch (g.state) {
+            case GestureRecorder.IDLE: post(() -> g.arm(beatAcc, bars)); return 0;
+            case GestureRecorder.ARMED:
+            case GestureRecorder.RECORDING: post(() -> g.finishEarly(beatAcc)); return 1;
+            case GestureRecorder.PLAYING: pushUndo(slot); post(() -> g.startOverdub(beatAcc)); return 2;
+            default: post(() -> g.stopOverdub(beatAcc)); return 3;
+        }
+    }
+
     public void clearGestures(int slot) {
         pushUndo(slot);
         post(() -> slots[slot].gestures.clear((t, id, x, y) -> emitGesture(slot, t, id, x, y)));
@@ -393,13 +411,18 @@ public final class Engine {
         java.util.Arrays.fill(mixR, 0, n, 0f);
         boolean anySolo = false;
         final double gridBeat = playing ? beatNow : freeBeat;     // arp keeps running while the transport is stopped
-        for (int i = 0; i < sc; i++) slots[i].render(mixL, mixR, n, frame, b, playing, gridBeat);
+        for (int i = 0; i < sc; i++) {
+            Fx.Delay dd = (Fx.Delay) slots[i].fx[Fx.DELAY];
+            if (dd.follow) dd.gridRate = slots[i].arpRate;
+            slots[i].render(mixL, mixR, n, frame, b, playing, gridBeat);
+        }
         for (int i = 0; i < Fx.COUNT; i++) master[i].process(mixL, mixR, n, b);
         float mv = masterVolume;
         float pl = 0f, pr = 0f;
         for (int i = 0; i < n; i++) {
             mixL[i] *= mv; mixR[i] *= mv;
         }
+        dyn.process(mixL, mixR, n);
         if (metronome && playing) clicks(n);
         for (int i = 0; i < n; i++) {
             pl = Math.max(pl, Math.abs(mixL[i])); pr = Math.max(pr, Math.abs(mixR[i]));

@@ -46,6 +46,8 @@ public final class ProjectStore {
             if (f instanceof com.gfdrps.core.Fx.Filter) o.put("hp", ((com.gfdrps.core.Fx.Filter) f).highPass);
             com.gfdrps.core.Fx.Tone tn = com.gfdrps.core.Fx.toneOf(f);
             if (tn != null) { o.put("tone", tn.mode); o.put("cut", tn.cut); }
+            if (f instanceof com.gfdrps.core.Fx.Delay) o.put("follow", ((com.gfdrps.core.Fx.Delay) f).follow);
+            if (f instanceof com.gfdrps.core.Fx.AmpMod) { o.put("shape", ((com.gfdrps.core.Fx.AmpMod) f).shape); o.put("async", ((com.gfdrps.core.Fx.AmpMod) f).sync); }
             a.put(o);
         }
         return a;
@@ -61,6 +63,8 @@ public final class ProjectStore {
             if (fx[k] instanceof com.gfdrps.core.Fx.Filter) ((com.gfdrps.core.Fx.Filter) fx[k]).highPass = o.optBoolean("hp", false);
             com.gfdrps.core.Fx.Tone tn = com.gfdrps.core.Fx.toneOf(fx[k]);
             if (tn != null) { tn.mode = o.optInt("tone", 0); tn.cut = (float) o.optDouble("cut", 0.5); }
+            if (fx[k] instanceof com.gfdrps.core.Fx.Delay) ((com.gfdrps.core.Fx.Delay) fx[k]).follow = o.optBoolean("follow", false);
+            if (fx[k] instanceof com.gfdrps.core.Fx.AmpMod) { ((com.gfdrps.core.Fx.AmpMod) fx[k]).shape = o.optInt("shape", 1); ((com.gfdrps.core.Fx.AmpMod) fx[k]).sync = o.optBoolean("async", false); }
         }
     }
 
@@ -78,13 +82,14 @@ public final class ProjectStore {
         j.put("mfx", fxJson(e.master));
         j.put("fxHold", e.fxHold);
         j.put("tracks", e.slotCount);
+        { JSONObject dj = new JSONObject(); dj.put("comp", e.dyn.compOn); dj.put("lim", e.dyn.limOn); dj.put("amt", e.dyn.amount); dj.put("ceil", e.dyn.ceilingDb); j.put("dyn", dj); }
         JSONArray arr = new JSONArray();
         for (int i = 0; i < e.slotCount; i++) {
             Slot s = e.slots[i];
             JSONObject o = new JSONObject();
             o.put("mode", s.mode); o.put("volume", s.volume); o.put("attack", s.attack);
             o.put("decay", s.decay); o.put("sustain", s.sustain); o.put("arpDir", s.arpDir); o.put("arpRate", s.arpRate); o.put("release", s.release); o.put("pan", s.pan); o.put("div", s.div);
-            o.put("transpose", s.transpose); o.put("infinite", s.infinite); o.put("gate", s.gate);
+            o.put("transpose", s.transpose); o.put("fine", s.fine); o.put("infinite", s.infinite); o.put("gate", s.gate);
             o.put("legato", s.legato); o.put("arpRandom", s.arpRandom); o.put("sampleBeats", s.sampleBeats);
             o.put("reversed", s.reversed);
             o.put("quantize", s.quantize); o.put("shuffle", s.shuffle);
@@ -127,6 +132,8 @@ public final class ProjectStore {
         e.bpm = j.optDouble("bpm", 120);
         e.masterVolume = (float) j.optDouble("master", 0.8);
         e.fxHold = j.optBoolean("fxHold", false);
+        JSONObject dj = j.optJSONObject("dyn");
+        if (dj != null) { e.dyn.compOn = dj.optBoolean("comp", false); e.dyn.limOn = dj.optBoolean("lim", false); e.dyn.amount = (float) dj.optDouble("amt", 0.4); e.dyn.ceilingDb = (float) dj.optDouble("ceil", -0.5); }
         JSONArray mfx = j.optJSONArray("mfx");
         if (mfx != null) fxLoad(mfx, e.master);
         e.clearUndo();
@@ -143,7 +150,7 @@ public final class ProjectStore {
             s.arpDir = o.optInt("arpDir", 0); s.arpRate = o.optInt("arpRate", 16);
             s.pan = (float) o.optDouble("pan", 0.5);
             s.div = o.optInt("div", 0);
-            s.transpose = o.optInt("transpose", 0);
+            s.transpose = o.optInt("transpose", 0); s.fine = (float) o.optDouble("fine", 0);
             s.infinite = o.optBoolean("infinite", false);
             s.gate = o.optBoolean("gate", false);
             s.legato = o.optBoolean("legato", false);
@@ -181,6 +188,42 @@ public final class ProjectStore {
             }
         }
     }
+
+    // ---------------------------------------------------------------- gesture presets (a take saved by name, reusable on any track)
+    private static File presetDir(Context c) { File f = new File(root(c).getParentFile(), "gesture_presets"); f.mkdirs(); return f; }
+
+    public static String[] listGesturePresets(Context c) {
+        File[] fs = presetDir(c).listFiles((d, n) -> n.endsWith(".json"));
+        if (fs == null) return new String[0];
+        String[] out = new String[fs.length];
+        for (int i = 0; i < fs.length; i++) out[i] = fs[i].getName().replaceAll("\\.json$", "");
+        java.util.Arrays.sort(out);
+        return out;
+    }
+
+    public static void saveGesturePreset(Context c, GestureRecorder gr, String name) throws Exception {
+        int gn = gr.eventCount();
+        if (gn == 0) throw new IOException("Nenhum gesto gravado");
+        JSONObject g = new JSONObject();
+        JSONArray gp = new JSONArray(), gt = new JSONArray(), gi = new JSONArray(), gx = new JSONArray(), gy = new JSONArray();
+        for (int k = 0; k < gn; k++) {
+            gp.put(Math.round(gr.phaseAt(k) * 10000.0) / 10000.0); gt.put(gr.typeAt(k)); gi.put(gr.idAt(k));
+            gx.put(Math.round(gr.xAt(k) * 10000.0) / 10000.0); gy.put(Math.round(gr.yAt(k) * 10000.0) / 10000.0);
+        }
+        g.put("bars", gr.bars()); g.put("p", gp); g.put("t", gt); g.put("i", gi); g.put("x", gx); g.put("y", gy);
+        try (FileOutputStream fo = new FileOutputStream(new File(presetDir(c), safe(name) + ".json"))) { fo.write(g.toString().getBytes("UTF-8")); }
+    }
+
+    public static void loadGesturePreset(Context c, Engine e, int slot, String name) throws Exception {
+        JSONObject gj = new JSONObject(new String(readAll(new File(presetDir(c), safe(name) + ".json")), "UTF-8"));
+        JSONArray gp = gj.getJSONArray("p"), gt = gj.getJSONArray("t"), gi = gj.getJSONArray("i"), gx = gj.getJSONArray("x"), gy = gj.getJSONArray("y");
+        int gn = Math.min(gp.length(), Math.min(gt.length(), Math.min(gi.length(), Math.min(gx.length(), gy.length()))));
+        double[] ph = new double[gn]; int[] ty = new int[gn], idd = new int[gn]; float[] xx = new float[gn], yy = new float[gn];
+        for (int k = 0; k < gn; k++) { ph[k] = gp.getDouble(k); ty[k] = gt.getInt(k); idd[k] = gi.getInt(k); xx[k] = (float) gx.getDouble(k); yy[k] = (float) gy.getDouble(k); }
+        e.setGestures(slot, gj.optInt("bars", 4), ph, ty, idd, xx, yy);
+    }
+
+    public static void deleteGesturePreset(Context c, String name) { new File(presetDir(c), safe(name) + ".json").delete(); }
 
     public static void delete(Context c, String name) {
         File dir = new File(root(c), safe(name));

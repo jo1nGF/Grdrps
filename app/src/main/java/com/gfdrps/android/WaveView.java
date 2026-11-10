@@ -65,6 +65,12 @@ public final class WaveView extends View {
         if (z <= 1.001f) zoom = 1f;
         invalidate();
     }
+    /** Moves the visible window sideways by a fraction of the window width (positive = later in the sample). */
+    public void panBy(float windowFractions) {
+        if (zoom <= 1.001f) return;
+        viewStart = Math.max(0f, Math.min(1f - 1f / zoom, viewStart + windowFractions / zoom));
+        invalidate();
+    }
     public void resetZoom() { zoom = 1f; viewStart = 0f; invalidate(); }
 
     // ---- manual slice editing (Slicer mode)
@@ -201,7 +207,7 @@ public final class WaveView extends View {
     @Override public boolean onTouchEvent(MotionEvent e) {
         int curMode = engine.slots[slotIndex].mode;
         if (zEff() > 1f && panTouch(e)) return true;
-        if (editSlices && curMode == Slot.SLICER) return editTouch(e);
+        if (editSlices && (curMode == Slot.SLICER || curMode == Slot.ARP)) return editTouch(e);
         if (editSlices && curMode == Slot.KEYBOARD) return regionTouch(e);
         float w = Math.max(1, getWidth()), h = Math.max(1, getHeight());
         int act = e.getActionMasked();
@@ -251,6 +257,7 @@ public final class WaveView extends View {
     @Override protected void onDraw(Canvas c) {
         float w = getWidth(), h = getHeight();
         Slot s = engine.slots[slotIndex];
+        s.viewZoom = zEff();
         int mode = s.mode;
         int accent = Theme.MODE[mode];
         Sample sm = s.sample;

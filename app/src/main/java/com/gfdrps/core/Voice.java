@@ -91,6 +91,8 @@ final class Voice {
 
     /** Moves the playhead without a click (short fade out, jump, fade in). */
     void jumpTo(double p) { pendPos = p; dip = 1; }
+    /** Pitch bend multiplier (live, slewed): 1 = none. */
+    double bendMul = 1.0, bendTgt = 1.0;
 
     /**
      * Moves the loop markers while playing. If the playhead would suddenly sit inside the new
@@ -184,7 +186,7 @@ final class Voice {
             if (glide > 0f) speed += (speedTgt - speed) * glide;
             if (dip == 1) {
                 dipG -= DIP;
-                if (dipG <= 0f) { dipG = 0f; pos = pendPos; dip = 2; }
+                if (dipG <= 0f) { dipG = 0f; pos = pendPos; sgAna = pendPos; dip = 2; }
             } else if (dip == 2) {
                 dipG += DIP;
                 if (dipG >= 1f) { dipG = 1f; dip = 0; }
@@ -204,7 +206,8 @@ final class Voice {
 
     private float playSample() {
         float s = loop ? readLoop(pos) : sm.at(pos);
-        double inc = speed * ratio;
+        bendMul += (bendTgt - bendMul) * 0.003;
+        double inc = speed * ratio * bendMul;
         if (!loop && !releasing && inc != 0) {
             double ai = Math.abs(inc);
             double rem = (inc > 0 ? end - pos : pos - start) / ai;           // frames left in the region
@@ -300,7 +303,8 @@ final class Voice {
             sgCur ^= 1;
             sgStart[sgCur] = best; sgIdx[sgCur] = 0;
         }
-        double step = pitch * ratio;
+        bendMul += (bendTgt - bendMul) * 0.003;
+        double step = pitch * ratio * bendMul;
         float acc = 0f;
         for (int g = 0; g < 2; g++) {
             int gi = sgIdx[g];

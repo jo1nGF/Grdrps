@@ -53,7 +53,7 @@ public final class AudioOutput {
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                 .build();
-        try { track.setBufferSizeInFrames(burst * 2); } catch (Exception ignored) { }   // smallest buffer that is stable; grows on underruns
+        try { track.setBufferSizeInFrames(burst); } catch (Exception ignored) { }   // smallest buffer that is stable; grows on underruns
     }
 
     public void start() {
@@ -63,7 +63,7 @@ public final class AudioOutput {
         thread = new Thread(() -> {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO);
             short[] buf = new short[chunkFrames * 2];
-            int lastUnderruns = 0, bufFrames = burst * 2, check = 0;
+            int lastUnderruns = 0, bufFrames = burst, check = 0;
             while (running) {
                 try {
                     engine.process(buf, chunkFrames);
@@ -72,7 +72,7 @@ public final class AudioOutput {
                 }
                 int w = track.write(buf, 0, buf.length);
                 if (w < 0) break;
-                if (++check >= 64) {                    // adaptive latency: add one burst after an underrun, up to 6 bursts
+                if (++check >= 16) {                    // adaptive latency: starts at ONE burst, adds a burst after an underrun (up to 6)
                     check = 0;
                     try {
                         int u = track.getUnderrunCount();

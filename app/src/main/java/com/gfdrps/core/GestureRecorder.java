@@ -5,7 +5,7 @@ package com.gfdrps.core;
  * locked to the project beat clock. Replayed events go through whatever play mode the slot has *now*.
  */
 public final class GestureRecorder {
-    public static final int IDLE = 0, ARMED = 1, RECORDING = 2, PLAYING = 3;
+    public static final int IDLE = 0, ARMED = 1, RECORDING = 2, PLAYING = 3, OVERDUB = 4;
     public static final int MAX_BARS = 128, MAX_EVENTS = 40000, ID_OFFSET = 1000;
 
     public interface Emitter { void emit(int type, int id, float x, float y); }
@@ -20,8 +20,12 @@ public final class GestureRecorder {
     private float[] x = new float[1024], y = new float[1024];
     private int count;
     private double startBeat, lastPhase;
-    private final boolean[] held = new boolean[16], fxHeld = new boolean[32];
+    private final boolean[] held = new boolean[64], fxHeld = new boolean[32];
     private boolean waitTouch;
+    private int layer;                       // overdub layer: its finger ids are shifted so they never collide with the take underneath
+    private int odFrom;                     // events at or after this index are the live overdub (never replayed during it)
+    private double odStart;                  // beat where the overdub began (it ends after one full pass)
+    private static final int LAYER_STEP = 10;
 
     public int eventCount() { return count; }
     private double loopBeats() { return bars * 4.0; }
@@ -122,6 +126,35 @@ public final class GestureRecorder {
     public float xAt(int i) { return x[i]; }
     public float yAt(int i) { return y[i]; }
 
+    /** Stops a take that is still being recorded: what was played is kept and loops at the chosen length. */
+    public void finishEarly(double beatNow) {
+        if (state == ARMED) { state = IDLE; count = 0; return; }
+        if (state != RECORDING) return;
+        for (int i = 0; i < held.length; i++) if (held[i]) add(2, i, 0f, 0f, beatNow);
+        for (int i = 0; i < fxHeld.length; i++) if (fxHeld[i]) add(5, i, 0f, 0f, beatNow);
+        java.util.Arrays.fill(held, false); java.util.Arrays.fill(fxHeld, false);
+        double p1 = (beatNow - startBeat) % loopBeats();
+        lastPhase = p1 < 0 ? 0 : p1;
+        state = count > 0 ? PLAYING : IDLE;
+    }
+
+    /** Records a new layer on top of the playing take (the loop keeps playing). It ends after one full pass or when called again. */
+    public boolean startOverdub(double beatNow) {
+        if (state != PLAYING) return false;
+        layer = (layer + 1) % 5;
+        odStart = beatNow; odFrom = count;
+        java.util.Arrays.fill(held, false);
+        state = OVERDUB;
+        return true;
+    }
+
+    public void stopOverdub(double beatNow) {
+        if (state != OVERDUB) return;
+        double ph = (beatNow - startBeat) % loopBeats(); if (ph < 0) ph += loopBeats();
+        for (int i = 0; i < held.length; i++) if (held[i]) { if (count < MAX_EVENTS) { if (count == phase.length) grow(); phase[count] = ph; type[count] = 2; id[count] = i; x[count] = 0; y[count] = 0; count++; } held[i] = false; }
+        state = PLAYING;
+    }
+
     public void clear(Emitter em) {
         if (state == PLAYING) releaseHeld(em);
         state = IDLE;
@@ -133,9 +166,13 @@ public final class GestureRecorder {
         if (state == ARMED && waitTouch && t != 2 && t != 5) {      // first touch: the take starts right now
             startBeat = beat; waitTouch = false; state = RECORDING; lastPhase = 0;
         }
-        if (state != RECORDING || count >= MAX_EVENTS) return;
+        if ((state != RECORDING && state != OVERDUB) || count >= MAX_EVENTS) return;
         if (count == phase.length) grow();
-        phase[count] = Math.max(0, beat - startBeat);
+        if (state == OVERDUB) {
+            double ph = (beat - startBeat) % loopBeats(); if (ph < 0) ph += loopBeats();
+            if (t < 3) touchId += layer * LAYER_STEP;
+            phase[count] = ph;
+        } else phase[count] = Math.max(0, beat - startBeat);
         type[count] = t; id[count] = touchId; x[count] = px; y[count] = py;
         count++;
         if (t >= 3) { if (touchId >= 0 && touchId < fxHeld.length) fxHeld[touchId] = t != 5; }
@@ -175,7 +212,8 @@ public final class GestureRecorder {
             }
             return;
         }
-        // PLAYING
+        // PLAYING (or OVERDUB: the old layers keep playing while the new one is being added)
+        if (st == OVERDUB && beatNow - odStart >= len) stopOverdub(beatNow);
         if (!transportPlaying) { releaseHeld(em); return; }
         double p1 = (beatNow - startBeat) % len;
         if (p1 < 0) p1 += len;
@@ -192,7 +230,7 @@ public final class GestureRecorder {
     private void emitRange(double a, double b, Emitter em) {
         for (int i = 0; i < count; i++) {
             double p = phase[i];
-            if (p >= a && p < b) {
+            if (p >= a && p < b && !(state == OVERDUB && i >= odFrom)) {
                 int tid = id[i];
                 if (type[i] >= 3) { if (tid >= 0 && tid < fxHeld.length) fxHeld[tid] = type[i] != 5; }
                 else if (tid >= 0 && tid < held.length) held[tid] = type[i] != 2;

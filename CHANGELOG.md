@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.6 (build 7)
+- **Slicer + legato**: deslizar o dedo entre fatias faz glissando (a nota continua e sobe/desce um semitom por fatia) em vez de retocar.
+- **Delay**: a grade de sync usa a mesma divisão de tempo do resto do app (1/64 a 1 compasso, com tercinas) e há a opção "seguir a grade do slot" (taxa do Arp / Q).
+- **Amp mod = gate** com 7 formas de onda (seno, gate, serra, rampa, triângulo, trance, aleatório) e taxa livre ou sincronizada ao BPM.
+- **Duplo toque em cada efeito** abre um submenu com as opções dele (tipo do filtro, forma do amp mod, sync/grade/filtro do delay, filtro do reverb, centralizar pad).
+- **Master**: compressor e limiter (menu Gf → "Master: compressor e limiter"); salvos no projeto.
+- **Gestos**: apertar ● de novo não perde mais o gesto (finaliza e mantém); ● com o gesto tocando faz **overdub** (soma uma camada; undo remove); menu (segure ●): **presets de gesto** (salvar / carregar em qualquer track / apagar).
+- **Importar áudio**: escolha o início e o tamanho do trecho (segundos ou min:seg); só o trecho é decodificado.
+- **Loop Player**: o dedo é a agulha — tocar ou arrastar leva o playhead para aquele ponto.
+- **Sliders** com ícones (volume, attack, decay, sustain, release, pan, grão).
+- **Zoom**: deslizar o dedo para cima/baixo no botão move a faixa horizontalmente.
+- **Latência**: buffer de áudio começa com apenas 1 burst e cresce sozinho se houver underrun (verificação mais rápida).
+- **Looper**: a grade (4/8/16/32) agora é relativa ao trecho visível — com zoom em faixas longas a distância entre os dedos é respeitada.
+- **Arp**: o botão de marcador volta a aparecer e edita as fatias; a taxa passou a ser o botão amarelo (Q).
+- **Transposição**: deslizar no valor = pitch bend (direita sobe, esquerda desce, volta ao soltar); segurar 2 s abre o campo para digitar o pitch (aceita decimais).
+- **Layout**: botões que não valem para o modo atual desaparecem (em vez de ficarem esmaecidos).
+
 ## 1.5 (build 6)
 - **Gestos reproduzidos aparecem na tela**: os dedos gravados viram anéis vermelhos (com linha vertical) na waveform e a posição do efeito gravado é mostrada no pad XY com um anel vermelho.
 - **Slicer**: a fatia tocada brilha em branco, como no Arpeggiator (também quando vem de auto-play ou de toque quantizado).

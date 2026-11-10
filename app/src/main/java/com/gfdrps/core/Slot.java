@@ -15,6 +15,12 @@ public final class Slot {
     public volatile float volume = 0.8f, attack = 0f, decay = 0.25f, sustain = 1f, release = 0.15f, pan = 0.5f;
     public volatile int div = 0;            // slices / arp steps per bar (0 = default 8); looper marker quantize (0 = free)
     public volatile int transpose = 0;      // semitones
+    /** Live pitch bend in semitones (fractional), added on top of transpose while notes play. */
+    public volatile float bend = 0f;
+    /** Fine tuning in semitones (the decimals of a typed pitch), kept with the track. */
+    public volatile float fine = 0f;
+    /** How much of the sample the waveform shows (1 = all, 4 = a quarter): the looper's grid is relative to what is on screen. */
+    public volatile float viewZoom = 1f;
     public volatile boolean infinite = false, gate = false, legato = false, arpRandom = false, muted = false;
     public volatile double sampleBeats = 8;  // length of the sample in beats (loop player sync)
     public volatile boolean reversed = false;
@@ -53,6 +59,7 @@ public final class Slot {
     private final int[] arpTmp = new int[16], arpOrd = new int[16];
     private final float[] arpVel = new float[16];
     private final double[] bounds = new double[2];
+    private final int[] tSlice = new int[16], tSlice0 = new int[16];
     private final Voice[] looperVs = new Voice[4];
     private boolean isLooperVoice(Voice v) { for (Voice x : looperVs) if (x == v) return true; return false; }
     private void releaseLoopers() {
@@ -367,7 +374,8 @@ public final class Slot {
                 v.vel = vel;
                 v.trigger(id, frame);
                 tVoice[k] = v;
-                arpSlice = sliceIndex(x); arpFlash = 1f;
+                tSlice[k] = tSlice0[k] = sliceIndex(x);
+                arpSlice = tSlice[k]; arpFlash = 1f;
                 break;
             }
             case LOOPER:
@@ -427,19 +435,22 @@ public final class Slot {
                 break;
             }
             case LOOPPLAYER: {
+                // the finger is the play needle: touching puts the playhead there (and starts the loop if it was stopped)
                 Voice running = null;
                 for (Voice v : voices) if (v.active && (v.kind == Voice.PLAY || v.kind == Voice.STRETCH) && v.loop && !v.releasing && v.start == 0 && v.end == len && v.touchId == -2) running = v;
-                if (running != null && !gate) {
-                    running.release();
+                double at = Math.max(0.0, Math.min(len - 1.0, x * (double) len));
+                if (running != null) {
+                    running.jumpTo(at);
+                    tVoice[k] = running;
                 } else {
                     Voice v = prepare(stretch ? Voice.STRETCH : Voice.PLAY, frame);
                     v.start = 0; v.end = len; v.loop = true;
                     v.vel = 0.9f;
-                    double phase = (beat / sampleBeats) % 1.0;
-                    v.pos = phase * len;
+                    v.pos = at;
                     v.pitch = pitchRatio();
                     v.speed = stretch ? 1.0 : pitchRatio();
                     v.trigger(-2, frame);   // -2 marks a loop-player voice (tempo-synced in render)
+                    if (stretch) v.jumpTo(at);
                     tVoice[k] = v;
                     requestTransport = true;        // the very first touch starts it, no need to press play
                 }
@@ -478,6 +489,28 @@ public final class Slot {
                     double t = v.scrBase + dxs * v.scrSpan;
                     v.scratchTo(Math.max(0, Math.min(len - 1, t)));
                 }
+                break;
+            case SLICER:
+                if (legato && v != null && v.active && !v.releasing) {
+                    int idx = sliceIndex(x);
+                    if (idx != tSlice[k]) {
+                        // glissando: the note carries on into the new slice, gliding up/down one semitone per slice
+                        sliceBounds(idx, bounds);
+                        Voice nv = prepare(Voice.PLAY, 0);
+                        nv.start = bounds[0] * len; nv.end = bounds[1] * len;
+                        nv.pos = nv.start; nv.loop = infinite; nv.vel = v.vel;
+                        double target = Math.pow(2.0, (idx - tSlice0[k]) / 12.0) * pitchRatio();
+                        nv.speed = v.speed;
+                        v.fastRelease();
+                        nv.trigger(tIds[k], 0);
+                        nv.speedTgt = target; nv.glide = 0.004f;
+                        tVoice[k] = nv;
+                        tSlice[k] = idx; arpSlice = idx; arpFlash = 1f;
+                    }
+                }
+                break;
+            case LOOPPLAYER:
+                if (v != null && v.active && v.touchId == -2) v.jumpTo(Math.max(0.0, Math.min(len - 1.0, x * (double) len)));     // drag = scrub the needle
                 break;
             case KEYBOARD:
                 if (v != null && v.active) {
@@ -552,9 +585,10 @@ public final class Slot {
                 b = a + (q > 0 ? 1.0 / q : 1.0 / 32.0);
             }
             if (q > 0) {
-                a = Math.round(a * q) / (double) q;
-                b = Math.round(b * q) / (double) q;
-                if (b - a < 0.5 / q) b = a + 1.0 / q;
+                double g = q * Math.max(1f, viewZoom);          // zoomed in: the grid gets finer, so the finger distance is respected
+                a = Math.round(a * g) / g;
+                b = Math.round(b * g) / g;
+                if (b - a < 0.5 / g) b = a + 1.0 / g;
             }
             if (b > 1.0) { double w = b - a; b = 1.0; a = Math.max(0.0, b - w); }
             double st = a * len, en = b * len;
@@ -796,6 +830,8 @@ public final class Slot {
         for (Voice v : voices) {
             if (!v.active) continue;
             if (v.kind == Voice.BOW) v.grainTgt = bowGrain();
+            float bb = bend + fine;
+            v.bendTgt = bb == 0f ? 1.0 : Math.pow(2.0, bb / 12.0);
             if (v.touchId != -4) v.setEnv(attack, decay, sustain, release);     // ADSR sliders act on held notes live
             if (v.touchId == -2 && s != null) {
                 if (!playing) { v.release(); continue; }

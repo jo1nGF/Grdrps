@@ -38,21 +38,45 @@ public final class SampleLoader {
         return dot > 0 ? name.substring(0, dot) : name;
     }
 
-    public static Sample load(Context c, Uri uri) throws IOException {
+    /** Length of the audio file in seconds, or -1 when it cannot be told. */
+    public static double durationSec(Context c, Uri uri) {
+        MediaExtractor ex = new MediaExtractor();
+        try {
+            ex.setDataSource(c, uri, null);
+            for (int i = 0; i < ex.getTrackCount(); i++) {
+                MediaFormat f = ex.getTrackFormat(i);
+                String mime = f.getString(MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("audio/") && f.containsKey(MediaFormat.KEY_DURATION)) return f.getLong(MediaFormat.KEY_DURATION) / 1e6;
+            }
+        } catch (Exception ignored) {
+        } finally { ex.release(); }
+        return -1;
+    }
+
+    public static Sample load(Context c, Uri uri) throws IOException { return load(c, uri, 0, 0); }
+
+    /** Loads only the part from startSec lasting lenSec (lenSec <= 0: until the end / the memory limit). */
+    public static Sample load(Context c, Uri uri, double startSec, double lenSec) throws IOException {
         String name = displayName(c, uri);
         long size = -1;
         try (android.content.res.AssetFileDescriptor fd = c.getContentResolver().openAssetFileDescriptor(uri, "r")) {
             if (fd != null) size = fd.getLength();
         } catch (Exception ignored) { }
-        if (size > MAX_DIRECT_BYTES) return decode(c, uri, name);        // big files are streamed through the codec, never held whole in memory
+        if (size > MAX_DIRECT_BYTES) return decode(c, uri, name, startSec, lenSec);        // big files are streamed through the codec, never held whole in memory
         byte[] bytes = readAll(c.getContentResolver(), uri);
         if (bytes.length > 12) {
             String tag = new String(bytes, 0, 4, "US-ASCII");
             if (tag.equals("RIFF") || tag.equals("FORM")) {
-                try { return WavIO.read(bytes, name); } catch (IOException ignored) { /* fall through to codec */ }
+                try {
+                    Sample w = WavIO.read(bytes, name);
+                    if (startSec <= 0 && lenSec <= 0) return w;
+                    int a = (int) Math.max(0, Math.min(w.length() - 64, startSec * w.sampleRate));
+                    int b = lenSec > 0 ? (int) Math.min(w.length(), a + lenSec * w.sampleRate) : w.length();
+                    return new Sample(java.util.Arrays.copyOfRange(w.data, a, Math.max(a + 64, b)), w.sampleRate, name);
+                } catch (IOException ignored) { /* fall through to codec */ }
             }
         }
-        return decode(c, uri, name);
+        return decode(c, uri, name, startSec, lenSec);
     }
 
     private static byte[] readAll(ContentResolver r, Uri uri) throws IOException {
@@ -69,7 +93,7 @@ public final class SampleLoader {
         }
     }
 
-    private static Sample decode(Context c, Uri uri, String name) throws IOException {
+    private static Sample decode(Context c, Uri uri, String name, double startSec, double lenSec) throws IOException {
         MediaExtractor ex = new MediaExtractor();
         MediaCodec codec = null;
         try {
@@ -87,10 +111,13 @@ public final class SampleLoader {
             codec.configure(fmt, null, null, 0);
             codec.start();
 
+            final long startUs = startSec > 0 ? (long) (startSec * 1e6) : 0L;
+            if (startUs > 0) ex.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
             int rate = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE);
             int ch = fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
             long durUs = fmt.containsKey(MediaFormat.KEY_DURATION) ? fmt.getLong(MediaFormat.KEY_DURATION) : 0;
-            int guess = durUs > 0 ? (int) Math.min((long) rate * MAX_SECONDS, durUs * rate / 1_000_000L + rate) : rate * 10;
+            final int limit = lenSec > 0 ? (int) Math.min((long) rate * MAX_SECONDS, (long) (lenSec * rate)) : rate * MAX_SECONDS;
+            int guess = durUs > 0 ? (int) Math.min((long) limit, durUs * rate / 1_000_000L + rate) : rate * 10;
             float[] data = new float[Math.max(rate, guess)];
             int len = 0;
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
@@ -116,8 +143,13 @@ public final class SampleLoader {
                     ob.order(ByteOrder.nativeOrder());
                     java.nio.ShortBuffer sb = ob.asShortBuffer();
                     int frames = sb.remaining() / Math.max(1, ch);
+                    if (startUs > 0 && info.presentationTimeUs < startUs) {      // the codec starts at the previous key frame: drop what is before the chosen start
+                        int skip = (int) Math.min(frames, (startUs - info.presentationTimeUs) * rate / 1_000_000L);
+                        sb.position(sb.position() + skip * Math.max(1, ch));
+                        frames -= skip;
+                    }
                     if (len + frames > data.length) {
-                        int cap = rate * MAX_SECONDS;
+                        int cap = limit;
                         if (len + frames > cap) { frames = Math.max(0, cap - len); outDone = true; inDone = true; }
                         if (len + frames > data.length) data = java.util.Arrays.copyOf(data, Math.min(cap, Math.max(data.length + data.length / 2, len + frames)));
                     }
@@ -127,6 +159,7 @@ public final class SampleLoader {
                         data[len++] = sum / ch;
                     }
                     codec.releaseOutputBuffer(oi, false);
+                    if (len >= limit) outDone = true;
                     if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outDone = true;
                 } else if (oi == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     MediaFormat nf = codec.getOutputFormat();

@@ -118,17 +118,47 @@ public final class Fx {
         }
     }
 
-    /** x = rate (0.5..20 Hz), y = depth. */
+    /**
+     * Amp mod / gate. x = rate (0.5..20 Hz, or a note length of the tempo with sync), y = depth (0 = nothing, 1 = full gate).
+     * The waveform decides how the level opens and closes: sine, square gate, saw down (plucks), ramp up (swells), triangle,
+     * trance (short 25 % pulses) and random steps.
+     */
     public static final class AmpMod extends Effect {
-        private double ph;
+        public static final int SINE = 0, SQUARE = 1, SAW = 2, RAMP = 3, TRI = 4, TRANCE = 5, RANDOM = 6;
+        public static final String[] SHAPES = {"Seno", "Gate", "Serra ↓", "Rampa ↑", "Triângulo", "Trance", "Aleatório"};
+        public volatile int shape = SQUARE;
+        /** true = the rate follows the project tempo (x picks the note length). */
+        public volatile boolean sync = false;
+        private static final int[] SYNC_RATES = {1, 2, 4, 6, 8, 12, 16, 24, 32};      // notes per bar
+        private double ph;                                    // 0..1
+        private float cur = 1f, rnd = 1f;
+        private final java.util.Random rng = new java.util.Random(7);
         public AmpMod(int rate) { super(rate); }
+        public static int syncIndex(double x) { return Math.min(SYNC_RATES.length - 1, (int) (Math.max(0.0, x) * SYNC_RATES.length)); }
+        public static int syncRate(double x) { return SYNC_RATES[syncIndex(x)]; }
+        private float wave(double p) {                        // 1 = open, 0 = closed
+            switch (shape) {
+                case SQUARE: return p < 0.5 ? 1f : 0f;
+                case SAW: return (float) (1.0 - p);
+                case RAMP: return (float) p;
+                case TRI: return (float) (p < 0.5 ? p * 2 : 2 - p * 2);
+                case TRANCE: return p < 0.25 ? 1f : 0f;
+                case RANDOM: return rnd;
+                default: return 0.5f + 0.5f * (float) Math.cos(2 * Math.PI * p);
+            }
+        }
         @Override protected void apply(float[] l, float[] r, int n, double bpm) {
-            double f = 0.5 * Math.pow(40.0, x);
-            double inc = 2 * Math.PI * f / rate;
+            double f = sync ? (Math.max(30.0, bpm) / 60.0) * (syncRate(x) / 4.0) : 0.5 * Math.pow(40.0, x);
+            double inc = f / rate;
+            // sharp shapes get a ~1.5 ms edge so a gate never clicks
+            final float slew = (shape == SQUARE || shape == TRANCE || shape == RANDOM || shape == SAW) ? 0.02f : 1f;
+            final float depth = y;
             for (int i = 0; i < n; i++) {
                 ph += inc;
-                if (ph > 2 * Math.PI) ph -= 2 * Math.PI;
-                float m = 1f - y * (0.5f + 0.5f * (float) Math.sin(ph));
+                if (ph >= 1.0) { ph -= 1.0; if (shape == RANDOM) rnd = rng.nextInt(3) == 0 ? 0f : (0.4f + 0.6f * rng.nextFloat()); }
+                float w = wave(ph);
+                cur += (w - cur) * slew;
+                float m = 1f - depth * (1f - cur);
                 l[i] *= m; r[i] *= m;
             }
         }
@@ -170,8 +200,20 @@ public final class Fx {
     public static final class Delay extends Effect {
         public static final double MIN_MS = 10.0, MAX_MS = 4000.0;
         /** Note lengths in beats for sync mode (1/32 .. 1 bar, straight and dotted). */
-        public static final double[] DIV = {0.125, 0.1875, 0.25, 0.375, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0};
-        public static final String[] DIV_NAMES = {"1/32", "1/32.", "1/16", "1/16.", "1/8", "1/8.", "1/4", "1/4.", "1/2", "1/2.", "1 bar"};
+        /** Same note grid as the arpeggiator / quantize / slices (notes per bar, shortest first), straight and triplets. */
+        public static final int[] DIV_RATES = {64, 48, 32, 24, 16, 12, 8, 6, 4, 3, 2, 1};
+        public static final double[] DIV = new double[DIV_RATES.length];
+        public static final String[] DIV_NAMES = new String[DIV_RATES.length];
+        static {
+            for (int i = 0; i < DIV_RATES.length; i++) {
+                int r = DIV_RATES[i];
+                DIV[i] = 4.0 / r;
+                DIV_NAMES[i] = r % 3 == 0 ? "1/" + (r * 2 / 3) + "T" : (r == 1 ? "1 bar" : "1/" + r);
+            }
+        }
+        /** When set (and sync is on) the delay follows the track's grid (its arp rate / quantize value) instead of the pad's x. */
+        public volatile boolean follow = false;
+        public volatile int gridRate = 0;
         /** true = x picks a note length locked to the project tempo; false = x is free time in milliseconds. */
         public volatile boolean sync = false;
         /** Delay time currently used, in ms (for the UI). */
@@ -198,7 +240,8 @@ public final class Fx {
 
         @Override public void process(float[] l, float[] r, int n, double bpm) {
             double ms;
-            if (sync) ms = DIV[divIndex(x)] * 60000.0 / Math.max(30.0, bpm);
+            if (sync && follow && gridRate > 0) ms = (4.0 / gridRate) * 60000.0 / Math.max(30.0, bpm);
+            else if (sync) ms = DIV[divIndex(x)] * 60000.0 / Math.max(30.0, bpm);
             else ms = msForX(x);
             ms = Math.max(MIN_MS, Math.min(MAX_MS, ms));
             shownMs = (float) ms;

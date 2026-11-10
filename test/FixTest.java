@@ -660,7 +660,7 @@ public class FixTest {
             for (int i = R; i < o4.length; i++) if (Math.abs(o4[i]) > pv) { pv = Math.abs(o4[i]); pkAt = i; }
             check(Math.abs(pkAt / (double) R - 4.0) < 0.03, "Delay: tempo máximo = 4 s (eco em " + pkAt / (double) R + " s)");
             // sync: x escolhe nota; 1/8 a 120 bpm = 250 ms
-            Fx.Delay sd = (Fx.Delay) Fx.create(Fx.DELAY, R); sd.sync = true; sd.x = 4.5f / 11f; sd.y = 0.2f; sd.active = true;
+            Fx.Delay sd = (Fx.Delay) Fx.create(Fx.DELAY, R); sd.sync = true; sd.x = 6.5f / 12f; sd.y = 0.2f; sd.active = true;
             runFx(sd, new float[1024], 120);
             check(Math.abs(sd.shownMs - 250f) < 1f, "Delay sync: 1/8 a 120 bpm = 250 ms (" + sd.shownMs + ")");
             runFx(sd, new float[1024], 90);
@@ -935,6 +935,106 @@ public class FixTest {
                 check(rms(hpOut, R / 2, R) < rms(noHp, R / 2, R) * 0.9f,
                         (fxIdx == 0 ? "Delay" : "Reverb") + ": high-pass reduz graves do efeito (" + rms(hpOut, R / 2, R) + " < " + rms(noHp, R / 2, R) + ")");
             }
+        }
+        // ---------------- v1.6
+        {
+            // delay grid: triplets + follow the track grid
+            Fx.Delay d = (Fx.Delay) Fx.create(Fx.DELAY, R); d.sync = true; d.follow = true; d.gridRate = 12; d.active = true; d.y = 0.2f;
+            runFx(d, new float[1024], 120);
+            check(Math.abs(d.shownMs - 166.67f) < 1f, "Delay: segue a grade do slot (1/8T a 120 bpm = 166.7 ms, " + d.shownMs + ")");
+            // amp mod gate: square shape at full depth reaches silence and full level
+            Fx.AmpMod am = (Fx.AmpMod) Fx.create(Fx.AMP, R); am.shape = Fx.AmpMod.SQUARE; am.x = 0.5f; am.y = 1f; am.active = true;
+            float[] ones = new float[R]; java.util.Arrays.fill(ones, 0.5f);
+            float[] ao = runFx(am, ones, 120);
+            float mn = 9, mx = 0; for (int i = R / 2; i < ao.length; i++) { mn = Math.min(mn, Math.abs(ao[i])); mx = Math.max(mx, Math.abs(ao[i])); }
+            check(mn < 0.02f && mx > 0.4f, "AmpMod gate: fecha e abre (min " + mn + ", max " + mx + ")");
+            // each shape produces a different envelope
+            double[] sig = new double[Fx.AmpMod.SHAPES.length];
+            for (int sh = 0; sh < sig.length; sh++) {
+                Fx.AmpMod a2 = (Fx.AmpMod) Fx.create(Fx.AMP, R); a2.shape = sh; a2.x = 0.4f; a2.y = 1f; a2.active = true;
+                float[] o = runFx(a2, ones, 120);
+                double sum = 0; for (int i = R / 2; i < o.length; i++) sum += Math.abs(o[i]);
+                sig[sh] = sum;
+            }
+            check(sig[Fx.AmpMod.SQUARE] != sig[Fx.AmpMod.SAW] && sig[Fx.AmpMod.TRANCE] < sig[Fx.AmpMod.SQUARE], "AmpMod: formas de onda diferentes");
+        }
+        {
+            // compressor / limiter
+            Dynamics dy = new Dynamics(R);
+            float[] l = new float[R], r = new float[R];
+            for (int i = 0; i < R; i++) l[i] = r[i] = 1.6f * (float) Math.sin(2 * Math.PI * 220 * i / R);
+            dy.limOn = true; dy.ceilingDb = -1f;
+            dy.process(l, r, R);
+            float pk = 0; for (int i = R / 2; i < R; i++) pk = Math.max(pk, Math.abs(l[i]));
+            check(pk <= 0.8913f + 1e-4f, "Limiter: nunca passa do teto (" + pk + ")");
+            Dynamics dc = new Dynamics(R); dc.compOn = true; dc.amount = 0.8f;
+            float[] cl = new float[R * 2], cr = new float[R * 2];
+            for (int i = 0; i < cl.length; i++) cl[i] = cr[i] = 0.9f * (float) Math.sin(2 * Math.PI * 220 * i / R);
+            dc.process(cl, cr, cl.length);
+            check(dc.reductionDb > 1f, "Compressor: reduz o ganho (" + dc.reductionDb + " dB)");
+            Dynamics off = new Dynamics(R);
+            float[] ol = {0.5f, -0.5f}, orr = {0.5f, -0.5f}; off.process(ol, orr, 2);
+            check(ol[0] == 0.5f, "Dynamics desligado = bypass");
+        }
+        {
+            // gesture: rec again keeps the take; overdub adds a layer
+            Engine g = new Engine(R);
+            short[] pcm = new short[512];
+            Slot s = g.slots[0]; s.mode = Slot.SLICER;
+            g.gestureButton(0, 1);
+            g.process(pcm, 256);
+            g.touch(0, 0, 0, 0.3f, 0.5f); g.process(pcm, 256);
+            g.touch(0, 2, 0, 0.3f, 0.5f); g.process(pcm, 256);
+            check(s.gestures.state == GestureRecorder.RECORDING, "Gesto: gravando");
+            g.gestureButton(0, 1); g.process(pcm, 256);
+            check(s.gestures.state == GestureRecorder.PLAYING && s.gestures.eventCount() == 2, "Gesto: apertar rec de novo mantém o gesto (" + s.gestures.eventCount() + " eventos)");
+            g.gestureButton(0, 1); g.process(pcm, 256);
+            check(s.gestures.state == GestureRecorder.OVERDUB, "Gesto: overdub liga");
+            g.touch(0, 0, 0, 0.7f, 0.5f); g.process(pcm, 256);
+            g.touch(0, 2, 0, 0.7f, 0.5f); g.process(pcm, 256);
+            g.gestureButton(0, 1); g.process(pcm, 256);
+            check(s.gestures.state == GestureRecorder.PLAYING && s.gestures.eventCount() == 4, "Gesto: overdub acrescenta eventos (" + s.gestures.eventCount() + ")");
+        }
+        {
+            // slicer legato glissando: sliding to the next slice keeps one note going and bends the pitch
+            Slot s = new Slot(R);
+            float[] data = new float[R * 2]; for (int i = 0; i < data.length; i++) data[i] = 0.3f * (float) Math.sin(i * 0.05);
+            s.setSample(new Sample(data, R, "x"), 120);
+            s.mode = Slot.SLICER; s.legato = true;
+            s.handle(0, 0, 0.05f, 0.5f, 0, 0);
+            float[] l = new float[256], r = new float[256];
+            for (int b = 0; b < 4; b++) { java.util.Arrays.fill(l, 0); java.util.Arrays.fill(r, 0); s.render(l, r, 256, b * 256L, 120, true); }
+            s.handle(1, 0, 0.30f, 0.5f, 0, 0);
+            check(s.arpSlice == s.sliceIndex(0.30f), "Legato Slicer: deslizar muda de fatia");
+            double e = 0; for (int b = 4; b < 40; b++) { java.util.Arrays.fill(l, 0); java.util.Arrays.fill(r, 0); s.render(l, r, 256, b * 256L, 120, true); for (float v : l) e += Math.abs(v); }
+            check(e > 1.0, "Legato Slicer: o som continua depois do deslize");
+        }
+        {
+            // loop player: the finger moves the needle
+            Slot s = new Slot(R);
+            float[] data = new float[R * 4]; for (int i = 0; i < data.length; i++) data[i] = i < data.length / 2 ? 0.0f : 0.5f;
+            s.setSample(new Sample(data, R, "x"), 120);
+            s.mode = Slot.LOOPPLAYER;
+            s.handle(0, 0, 0.8f, 0.5f, 0, 0);
+            float[] l = new float[256], r = new float[256];
+            double e = 0; for (int b = 0; b < 30; b++) { java.util.Arrays.fill(l, 0); java.util.Arrays.fill(r, 0); s.render(l, r, 256, b * 256L, 120, true); if (b > 10) for (float v : l) e += Math.abs(v); }
+            check(e > 5.0, "Loop player: o dedo põe a agulha (tocando a 2a metade)");
+        }
+        {
+            // pitch bend
+            Slot s = new Slot(R);
+            float[] data = new float[R * 4]; for (int i = 0; i < data.length; i++) data[i] = (float) Math.sin(2 * Math.PI * 200.0 * i / R) * 0.5f;
+            s.setSample(new Sample(data, R, "x"), 120);
+            s.mode = Slot.SLICER; s.infinite = true; s.div = 4;
+            s.handle(0, 0, 0.1f, 0.5f, 0, 0);
+            float[] l = new float[256], r = new float[256];
+            int[] zc = new int[2];
+            for (int ph = 0; ph < 2; ph++) {
+                if (ph == 1) s.bend = 12f;
+                for (int b = 0; b < 40; b++) { java.util.Arrays.fill(l, 0); java.util.Arrays.fill(r, 0); s.render(l, r, 256, (ph * 40 + b) * 256L, 120, true);
+                    if (b >= 30) for (int i = 1; i < 256; i++) if (l[i - 1] < 0 && l[i] >= 0) zc[ph]++; }
+            }
+            check(zc[1] > zc[0] * 1.6, "Pitch bend: +12 semitons dobra a frequência (" + zc[0] + " -> " + zc[1] + ")");
         }
         System.out.println(fails == 0 ? "\nTODOS OS TESTES PASSARAM" : "\nFALHAS: " + fails);
         System.exit(fails == 0 ? 0 : 1);

@@ -18,6 +18,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.EditText;
+import android.widget.TextView;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
@@ -168,13 +169,13 @@ public final class MainActivity extends Activity {
 
         // row 3: sliders | controls
         LinearLayout r3 = row();
-        volS = new Widgets.Slider(this, true).accent(0xFFE9EDF2).onValue(v -> engine.slots[sel].volume = v);
-        attS = new Widgets.Slider(this, true).accent(0xFFFF9A2E).onValue(v -> engine.slots[sel].attack = v * v * 2f);
-        decS = new Widgets.Slider(this, true).accent(0xFFFFD23F).onValue(v -> engine.slots[sel].decay = 0.02f + v * v * 3f);
-        susS = new Widgets.Slider(this, true).accent(0xFF7CFF6B).onValue(v -> engine.slots[sel].sustain = v);
-        relS = new Widgets.Slider(this, true).accent(0xFF3DD6FF).onValue(v -> engine.slots[sel].release = 0.01f + v * v * 3f);
-        panS = new Widgets.Slider(this, true).accent(0xFFB46CFF).onValue(v -> engine.slots[sel].pan = v);
-        sizeS = new Widgets.Slider(this, true).accent(0xFF7CC4FF).onValue(v -> engine.slots[sel].bowSize = v);
+        volS = new Widgets.Slider(this, true).icon(Theme.I_VOL).accent(0xFFE9EDF2).onValue(v -> engine.slots[sel].volume = v);
+        attS = new Widgets.Slider(this, true).icon(Theme.I_ATT).accent(0xFFFF9A2E).onValue(v -> engine.slots[sel].attack = v * v * 2f);
+        decS = new Widgets.Slider(this, true).icon(Theme.I_DEC).accent(0xFFFFD23F).onValue(v -> engine.slots[sel].decay = 0.02f + v * v * 3f);
+        susS = new Widgets.Slider(this, true).icon(Theme.I_SUS).accent(0xFF7CFF6B).onValue(v -> engine.slots[sel].sustain = v);
+        relS = new Widgets.Slider(this, true).icon(Theme.I_REL).accent(0xFF3DD6FF).onValue(v -> engine.slots[sel].release = 0.01f + v * v * 3f);
+        panS = new Widgets.Slider(this, true).icon(Theme.I_PAN).accent(0xFFB46CFF).onValue(v -> engine.slots[sel].pan = v);
+        sizeS = new Widgets.Slider(this, true).icon(Theme.I_GRAIN).accent(0xFF7CC4FF).onValue(v -> engine.slots[sel].bowSize = v);
         r3.addView(volS, lp(0.7f)); r3.addView(attS, lp(0.7f)); r3.addView(decS, lp(0.7f)); r3.addView(susS, lp(0.7f)); r3.addView(relS, lp(0.7f)); r3.addView(panS, lp(0.7f)); r3.addView(sizeS, lp(0.7f));
 
         LinearLayout mid = col();
@@ -190,10 +191,8 @@ public final class MainActivity extends Activity {
         dr.addView(ctxT, lp(1f));
         edT = tile().icon(Theme.I_MARK).accent(0xFFFFD23F).onClick(() -> {
                     Slot sl = engine.slots[sel];
-                    if (sl.mode == Slot.ARP) { sl.arpRate = ARP_RATES[(rateIndex(sl.arpRate) + 1) % ARP_RATES.length]; }
-                    else if (sl.mode == Slot.SLICER || sl.mode == Slot.KEYBOARD) wave.setEditSlices(!wave.isEditSlices());
+                    if (sl.mode == Slot.SLICER || sl.mode == Slot.ARP || sl.mode == Slot.KEYBOARD) wave.setEditSlices(!wave.isEditSlices());
                     refresh(); })
-                .onDrag(slideSteps(ARP_RATES, () -> engine.slots[sel].arpRate, v -> { if (engine.slots[sel].mode == Slot.ARP) { engine.slots[sel].arpRate = v; refresh(); } }, 22f))
                 .onLong(() -> {
                     Slot sl = engine.slots[sel];
                     if (sl.mode == Slot.KEYBOARD) { engine.pushUndo(sel); engine.setRegion(sel, 0f, 1f); toast("Região: sample inteiro"); }
@@ -205,7 +204,18 @@ public final class MainActivity extends Activity {
         LinearLayout tr = row();
         tr.addView(tile().text("-12").onClick(() -> transpose(-12)), lp(1f));
         tr.addView(tile().text("-1").onClick(() -> transpose(-1)), lp(1f));
-        trValT = tile().text("0").accent(0xFFFFFFFF).textScale(0.6f).onClick(() -> { engine.slots[sel].transpose = 0; refresh(); });
+        trValT = tile().text("0").accent(0xFFFFFFFF).textScale(0.6f).longPressMs(2000)
+                .onClick(() -> { engine.slots[sel].transpose = 0; engine.slots[sel].fine = 0f; refresh(); })
+                .onLong(this::pitchDialog)
+                .onDrag(new Widgets.Tile.Drag() {          // slide right = bend up, left = bend down; lets go = springs back
+                    @Override public void drag(float total, float delta) {
+                        bendHeld = true;
+                        float semis = Math.max(-12f, Math.min(12f, total / dp(14)));
+                        engine.slots[sel].bend = semis;
+                        trValT.text((semis >= 0 ? "▲" : "▼") + String.format(java.util.Locale.US, "%.1f", Math.abs(semis)));
+                    }
+                    @Override public void end() { bendHeld = false; ui.post(bendBack); }
+                });
         tr.addView(trValT, lp(1.4f));
         tr.addView(tile().text("+1").onClick(() -> transpose(1)), lp(1f));
         tr.addView(tile().text("+12").onClick(() -> transpose(12)), lp(1f));
@@ -230,7 +240,9 @@ public final class MainActivity extends Activity {
             refresh(); });
         xr.addView(lkT, lp(1.3f));
         qT = tile().text("Q").textScale(0.34f).accent(0xFFFFD23F)
-                .onClick(() -> { Slot s = engine.slots[sel]; s.quantize = !s.quantize; toast(s.quantize ? "Quantizar: toques esperam a grade (" + rateName(s.arpRate) + ") — deslize para mudar" : "Quantizar desligado"); refresh(); })
+                .onClick(() -> { Slot s = engine.slots[sel];
+                    if (s.mode == Slot.ARP) { s.arpRate = ARP_RATES[(rateIndex(s.arpRate) + 1) % ARP_RATES.length]; toast("Taxa " + rateName(s.arpRate)); refresh(); return; }
+                    s.quantize = !s.quantize; toast(s.quantize ? "Quantizar: toques esperam a grade (" + rateName(s.arpRate) + ") — deslize para mudar" : "Quantizar desligado"); refresh(); })
                 .onDrag(slideSteps(ARP_RATES, () -> engine.slots[sel].arpRate, v -> { engine.slots[sel].arpRate = v; refresh(); }, 22f))
                 .onLong(() -> { Slot s = engine.slots[sel]; s.arpRate = ARP_RATES[(rateIndex(s.arpRate) + 1) % ARP_RATES.length]; toast("Grade " + rateName(s.arpRate)); refresh(); });
         xr.addView(qT, lp(1.3f));
@@ -250,6 +262,7 @@ public final class MainActivity extends Activity {
                         zoomT.text(zoomLabel(wave.zoom()));
                     }
                     @Override public void end() { base = -1f; refresh(); }
+                    @Override public void vertical(float total, float delta) { wave.panBy(-delta / dp(90)); }     // slide up = the view moves right along the track
                 });
         xr.addView(zoomT, lp(1f));
         mid.addView(xr, lpv(1f));
@@ -264,8 +277,11 @@ public final class MainActivity extends Activity {
         for (int f = 0; f < Fx.COUNT; f++) {
             final int ff = f;
             fxTiles[f] = tile().icon(fxIcons[f]).accent(Theme.FX[f]).onClick(() -> {
-                if (ff == Fx.FILTER && fxSel == Fx.FILTER) { toggleFilterType(); return; }   // second tap = LP/HP
+                long now = android.os.SystemClock.uptimeMillis();
+                boolean dbl = lastFxTap == ff && now - lastFxTapAt < 400;          // two taps on the same effect open its options
+                lastFxTap = ff; lastFxTapAt = now;
                 fxSel = ff; pad.select(sel, fxSel, masterFx); midi.selectedFx = ff; refresh();
+                if (dbl) { lastFxTap = -1; fxMenu(ff); }
             });
             fxCol.addView(fxTiles[f], lpv(1f));
         }
@@ -373,18 +389,20 @@ public final class MainActivity extends Activity {
         else if (s.mode == Slot.LOOPER) { ctxT.text("P-P").accent(Theme.MODE[1]); ctxT.setOn(s.pingPong); ctxT.setDim(false); }
         else if (s.mode == Slot.LOOPPLAYER) { ctxT.text("STR").accent(Theme.MODE[7]); ctxT.setOn(s.stretch); ctxT.setDim(false); }
         else { ctxT.icon(Theme.I_DICE); ctxT.setOn(false); ctxT.setDim(true); }
-        if (s.mode != Slot.SLICER && s.mode != Slot.KEYBOARD && wave.isEditSlices()) wave.setEditSlices(false);
+        if (s.mode != Slot.SLICER && s.mode != Slot.ARP && s.mode != Slot.KEYBOARD && wave.isEditSlices()) wave.setEditSlices(false);
         boolean divOk = s.mode == Slot.SLICER || s.mode == Slot.LOOPER || s.mode == Slot.ARP || s.mode == Slot.TAPE || s.mode == Slot.SCRATCH;
-        for (int k = 0; k < Slot.DIVS.length; k++) divTiles[k].setDim(!divOk);
         zoomT.text(zoomLabel(wave.zoom()));
         undoT.setDim(!engine.canUndo(sel));
         redoT.setDim(!engine.canRedo(sel));
         refreshTone();
         for (int i = 0; i < Engine.SLOTS; i++) strips[i].setVisibility(i < engine.slotCount ? View.VISIBLE : View.GONE);
         addT.setVisibility(engine.slotCount < Engine.SLOTS ? View.VISIBLE : View.GONE);
-        if (s.mode == Slot.ARP) { edT.text(rateName(s.arpRate)).accent(0xFFFFD23F); edT.setOn(true); edT.setDim(false); }
-        else { edT.icon(Theme.I_MARK).accent(0xFFFFD23F); edT.setOn(wave.isEditSlices()); edT.setDim(s.mode != Slot.SLICER && s.mode != Slot.KEYBOARD); }
-        glideT.setDim(s.mode != Slot.KEYBOARD);
+        edT.icon(Theme.I_MARK).accent(0xFFFFD23F); edT.setOn(wave.isEditSlices());
+        show(edT, s.mode == Slot.SLICER || s.mode == Slot.ARP || s.mode == Slot.KEYBOARD);     // controls that do nothing in this mode disappear
+        show(glideT, s.mode == Slot.KEYBOARD || s.mode == Slot.SLICER);
+        show(ctxT, s.mode == Slot.SLICER || s.mode == Slot.ARP || s.mode == Slot.LOOPER || s.mode == Slot.LOOPPLAYER);
+        for (int k = 0; k < Slot.DIVS.length; k++) show(divTiles[k], divOk);
+        show(autoT, s.mode == Slot.SLICER); show(shufT, s.mode == Slot.SLICER);
         sizeS.set(s.bowSize);
         // one single Filter module: its icon shows whether it is low-pass or high-pass
         Fx.Filter flt = (Fx.Filter) (masterFx ? engine.master[Fx.FILTER] : s.fx[Fx.FILTER]);
@@ -392,12 +410,14 @@ public final class MainActivity extends Activity {
         pad.invalidate();
         glideT.setOn(s.legato); infT.setOn(s.infinite);
         masterFxT.setOn(masterFx);
-        trValT.text((s.transpose > 0 ? "+" : "") + s.transpose);
+        if (!bendHeld) trValT.text(s.fine != 0f ? String.format(java.util.Locale.US, "%+.1f", s.transpose + s.fine) : (s.transpose > 0 ? "+" : "") + s.transpose);
         lkT.setOn(s.latch);
         boolean qOk = s.mode == Slot.SLICER || s.mode == Slot.KEYBOARD;
-        qT.text("Q " + rateName(s.arpRate)); qT.setOn(s.quantize && qOk); qT.setDim(!qOk);
-        autoT.setOn(s.autoPlay); autoT.setDim(s.mode != Slot.SLICER);
-        shufT.setOn(s.shuffle); shufT.setDim(s.mode != Slot.SLICER);
+        show(qT, qOk || s.mode == Slot.ARP);
+        if (s.mode == Slot.ARP) { qT.text(rateName(s.arpRate)); qT.setOn(true); }       // in the arpeggiator this button is the note rate
+        else { qT.text("Q " + rateName(s.arpRate)); qT.setOn(s.quantize && qOk); }
+        autoT.setOn(s.autoPlay);
+        shufT.setOn(s.shuffle);
         Fx.Delay dly = (Fx.Delay) (masterFx ? engine.master[Fx.DELAY] : s.fx[Fx.DELAY]);
         syncT.setOn(dly.sync);
         volS.set(s.volume);
@@ -419,6 +439,7 @@ public final class MainActivity extends Activity {
         recGestT.setOn(st != GestureRecorder.IDLE);
         if (st == GestureRecorder.IDLE) barsT.text(String.valueOf(BARS[barsIdx]));
         else if (st == GestureRecorder.ARMED) barsT.text("…");
+        else if (st == GestureRecorder.OVERDUB) barsT.text("OD " + ((int) (g.progress * g.bars) + 1) + "/" + g.bars);
         else barsT.text(((int) (g.progress * g.bars) + 1) + "/" + g.bars);
     }
 
@@ -490,6 +511,108 @@ public final class MainActivity extends Activity {
         stripScroll.post(() -> stripScroll.fullScroll(View.FOCUS_RIGHT));
         toast("Track " + (n + 1) + " adicionada — carregue um som ou grave");
     }
+    private int lastFxTap = -1; private long lastFxTapAt;
+
+    /** Options of one effect (opens with a double tap on its button). */
+    private void fxMenu(final int f) {
+        final Fx.Effect ef = masterFx ? engine.master[f] : engine.slots[sel].fx[f];
+        final java.util.ArrayList<String> names = new java.util.ArrayList<>();
+        final java.util.ArrayList<Runnable> acts = new java.util.ArrayList<>();
+        final String[] fxNames = {"Distorção", "Filtro", "Amp mod / Gate", "Delay", "Reverb"};
+        switch (f) {
+            case Fx.FILTER: {
+                final Fx.Filter fl = (Fx.Filter) ef;
+                names.add((fl.highPass ? "  " : "● ") + "Passa-baixas (LP)"); acts.add(() -> { fl.highPass = false; });
+                names.add((fl.highPass ? "● " : "  ") + "Passa-altas (HP)"); acts.add(() -> { fl.highPass = true; });
+                break;
+            }
+            case Fx.AMP: {
+                final Fx.AmpMod am = (Fx.AmpMod) ef;
+                for (int i = 0; i < Fx.AmpMod.SHAPES.length; i++) { final int sh = i; names.add((am.shape == i ? "● " : "  ") + "Forma: " + Fx.AmpMod.SHAPES[i]); acts.add(() -> am.shape = sh); }
+                names.add((am.sync ? "● " : "  ") + "Sincronizar a taxa com o BPM (X escolhe a nota)"); acts.add(() -> am.sync = !am.sync);
+                break;
+            }
+            case Fx.DELAY: {
+                final Fx.Delay dl = (Fx.Delay) ef;
+                names.add((dl.sync ? "● " : "  ") + "Sincronizar com o BPM (1/64 a 1 compasso, com tercinas)"); acts.add(() -> dl.sync = !dl.sync);
+                names.add((dl.follow ? "● " : "  ") + "Seguir a grade do slot (taxa do Arp / Q)"); acts.add(() -> { dl.follow = !dl.follow; if (dl.follow) dl.sync = true; });
+                addToneItems(dl.tone, names, acts);
+                break;
+            }
+            case Fx.REVERB: addToneItems(((Fx.Reverb) ef).tone, names, acts); break;
+            default: break;
+        }
+        names.add("Voltar o pad para o centro"); acts.add(() -> ef.setXY(0.5f, 0.5f));
+        new AlertDialog.Builder(this).setTitle(fxNames[f] + (masterFx ? " (master)" : "")).setItems(names.toArray(new String[0]), (d, w) -> { acts.get(w).run(); refresh(); }).show();
+    }
+
+    private void addToneItems(final Fx.Tone tn, java.util.List<String> names, java.util.List<Runnable> acts) {
+        names.add((tn.mode == 0 ? "● " : "  ") + "Filtro do efeito: desligado"); acts.add(() -> tn.mode = 0);
+        names.add((tn.mode == 1 ? "● " : "  ") + "Filtro do efeito: passa-baixas (deslize no botão LP/HP: corte)"); acts.add(() -> tn.mode = 1);
+        names.add((tn.mode == 2 ? "● " : "  ") + "Filtro do efeito: passa-altas (deslize no botão LP/HP: corte)"); acts.add(() -> tn.mode = 2);
+    }
+
+    /** Master bus compressor and limiter. */
+    private void dynamicsDialog() {
+        final com.gfdrps.core.Dynamics dy = engine.dyn;
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = Math.round(dp(16)); box.setPadding(pad, pad / 2, pad, 0);
+        final android.widget.CheckBox cc = new android.widget.CheckBox(this); cc.setText("Compressor"); cc.setChecked(dy.compOn);
+        final android.widget.TextView ca = new TextView(this); ca.setText("Intensidade");
+        final android.widget.SeekBar cs = new android.widget.SeekBar(this); cs.setMax(100); cs.setProgress(Math.round(dy.amount * 100));
+        final android.widget.CheckBox lc = new android.widget.CheckBox(this); lc.setText("Limiter"); lc.setChecked(dy.limOn);
+        final android.widget.TextView la = new TextView(this); la.setText("Teto: " + String.format(java.util.Locale.US, "%.1f dB", dy.ceilingDb));
+        final android.widget.SeekBar ls = new android.widget.SeekBar(this); ls.setMax(60); ls.setProgress(Math.round((dy.ceilingDb + 6f) * 10f));
+        cc.setOnCheckedChangeListener((b, on) -> dy.compOn = on);
+        lc.setOnCheckedChangeListener((b, on) -> dy.limOn = on);
+        cs.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(android.widget.SeekBar sb, int v, boolean u) { dy.amount = v / 100f; }
+            @Override public void onStartTrackingTouch(android.widget.SeekBar sb) { }
+            @Override public void onStopTrackingTouch(android.widget.SeekBar sb) { }
+        });
+        ls.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(android.widget.SeekBar sb, int v, boolean u) { dy.ceilingDb = v / 10f - 6f; la.setText("Teto: " + String.format(java.util.Locale.US, "%.1f dB", dy.ceilingDb)); }
+            @Override public void onStartTrackingTouch(android.widget.SeekBar sb) { }
+            @Override public void onStopTrackingTouch(android.widget.SeekBar sb) { }
+        });
+        box.addView(cc); box.addView(ca); box.addView(cs); box.addView(lc); box.addView(la); box.addView(ls);
+        new AlertDialog.Builder(this).setTitle("Master: compressor e limiter").setView(box).setPositiveButton("OK", null).show();
+    }
+
+    private boolean bendHeld;
+    private final Runnable bendBack = new Runnable() {
+        @Override public void run() {
+            if (bendHeld) return;
+            boolean more = false;
+            for (int i = 0; i < Engine.SLOTS; i++) {
+                Slot sl = engine.slots[i];
+                float b = sl.bend;
+                if (b != 0f) { b = Math.abs(b) < 0.05f ? 0f : b * 0.6f; sl.bend = b; more |= b != 0f; }
+            }
+            if (more) ui.postDelayed(this, 16); else refresh();
+        }
+    };
+
+    private void pitchDialog() {
+        final Slot sl = engine.slots[sel];
+        final EditText et = new EditText(this);
+        et.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL | android.text.InputType.TYPE_NUMBER_FLAG_SIGNED);
+        et.setText(String.format(java.util.Locale.US, "%.2f", sl.transpose + sl.fine));
+        new AlertDialog.Builder(this).setTitle("Pitch (semitons, aceita decimais: 3.5 = 3 semitons e meio)").setView(et)
+                .setPositiveButton("Aplicar", (d, w) -> {
+                    try {
+                        float v = Math.max(-24f, Math.min(24f, Float.parseFloat(et.getText().toString().trim().replace(',', '.'))));
+                        int whole = Math.round(v);
+                        sl.transpose = whole; sl.fine = v - whole;
+                        refresh();
+                    } catch (NumberFormatException ex) { toast("Valor inválido"); }
+                })
+                .setNegativeButton("Cancelar", null).show();
+    }
+
+    private static void show(Widgets.Tile t, boolean visible) { t.setVisibility(visible ? View.VISIBLE : View.GONE); }
+
     private float autoSens = 0.5f;
 
     /** Slicer: detect hits and place markers. Arpeggiator: toggle random order. */
@@ -528,11 +651,13 @@ public final class MainActivity extends Activity {
     }
 
     private void toggleGestures() {
-        Slot s = engine.slots[sel];
-        if (s.gestures.state == GestureRecorder.IDLE) {
-            engine.armGestures(sel, BARS[barsIdx]);
-            toast("Gesto armado: toque na waveform ou no pad de efeito para começar (" + BARS[barsIdx] + " compassos)");
-        } else engine.clearGestures(sel);
+        switch (engine.gestureButton(sel, BARS[barsIdx])) {
+            case 0: toast("Gesto armado: toque na waveform ou no pad de efeito para começar (" + BARS[barsIdx] + " compassos)"); break;
+            case 1: toast("Gesto finalizado: ele toca em loop (● de novo = overdub, segure ● = menu)"); break;
+            case 2: toast("Overdub: o que você tocar agora é somado ao gesto (undo remove)"); break;
+            default: toast("Overdub finalizado"); break;
+        }
+        ui.postDelayed(this::refresh, 150);
     }
 
     private void pickFile() {
@@ -548,19 +673,57 @@ public final class MainActivity extends Activity {
         if (req != REQ_FILE || res != RESULT_OK || data == null || data.getData() == null) return;
         final Uri uri = data.getData();
         final int target = sel;
-        toast("Carregando…");
+        // ask which part of the file to import (start + length) before decoding anything
         new Thread(() -> {
-            try {
-                Sample s = SampleLoader.load(this, uri);
-                engine.loadSample(target, s);
-                ui.post(() -> { toast("Slot " + (target + 1) + ": " + s.name); refresh(); });
-            } catch (OutOfMemoryError oom) {
-                ui.post(() -> toast("Arquivo grande demais para a memória do aparelho. Use um trecho mais curto."));
-            } catch (Throwable e) {
-                final String m = e.getMessage();
-                ui.post(() -> toast("Erro: " + m));
-            }
-        }, "gfdrps-load").start();
+            final double dur = SampleLoader.durationSec(this, uri);
+            ui.post(() -> importDialog(uri, target, dur));
+        }, "gfdrps-probe").start();
+    }
+
+    private static double parseTime(String t, double def) {
+        try {
+            t = t.trim().replace(',', '.');
+            if (t.isEmpty()) return def;
+            if (t.contains(":")) { String[] p = t.split(":"); double v = 0; for (String q : p) v = v * 60 + Double.parseDouble(q.trim()); return v; }
+            return Double.parseDouble(t);
+        } catch (Exception e) { return def; }
+    }
+
+    private static String fmtTime(double s) { int t = (int) Math.round(s); return (t / 60) + ":" + (t % 60 < 10 ? "0" : "") + (t % 60); }
+
+    private void importDialog(final Uri uri, final int target, final double dur) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = Math.round(dp(16));
+        box.setPadding(pad, pad / 2, pad, 0);
+        TextView info = new TextView(this);
+        info.setText(dur > 0 ? "Duração do arquivo: " + fmtTime(dur) + " (" + Math.round(dur) + " s). Use segundos ou min:seg." : "Duração desconhecida. Use segundos ou min:seg.");
+        box.addView(info);
+        final EditText st = new EditText(this); st.setHint("Início (ex.: 0 ou 1:30)"); st.setText("0");
+        final EditText ln = new EditText(this); ln.setHint("Tamanho do trecho (vazio = tudo, máx. 4 min)");
+        if (dur > 0) ln.setText(String.valueOf(Math.round(Math.min(dur, 240))));
+        st.setInputType(android.text.InputType.TYPE_CLASS_TEXT); ln.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+        box.addView(st); box.addView(ln);
+        new AlertDialog.Builder(this).setTitle("Importar trecho").setView(box)
+                .setPositiveButton("Importar", (d, w) -> {
+                    final double a = Math.max(0, parseTime(st.getText().toString(), 0));
+                    double l = parseTime(ln.getText().toString(), 0);
+                    final double len = l > 0 ? Math.min(l, 240) : 0;
+                    toast("Carregando…");
+                    new Thread(() -> {
+                        try {
+                            Sample s = SampleLoader.load(this, uri, a, len);
+                            engine.loadSample(target, s);
+                            ui.post(() -> { toast("Track " + (target + 1) + ": " + s.name + " (" + fmtTime(s.length() / (double) s.sampleRate) + ")"); refresh(); });
+                        } catch (OutOfMemoryError oom) {
+                            ui.post(() -> toast("Arquivo grande demais para a memória do aparelho. Use um trecho mais curto."));
+                        } catch (Throwable e) {
+                            final String m = e.getMessage();
+                            ui.post(() -> toast("Erro: " + m));
+                        }
+                    }, "gfdrps-load").start();
+                })
+                .setNegativeButton("Cancelar", null).show();
     }
 
     private void toggleRecord(int mode) {
@@ -633,6 +796,7 @@ public final class MainActivity extends Activity {
     private void mainMenu() {
         String[] items = {"Salvar projeto", "Abrir projeto", "MIDI Learn…", "Limpar mapeamentos MIDI", "Reconectar MIDI",
                 "Clock MIDI externo: " + (engine.midiSync ? "ligado" : "desligado"),
+                "Master: compressor e limiter…",
                 engine.isExporting() ? "Parar e salvar gravação do mix (WAV)" : "Gravar o que está tocando em WAV (Music/GfDrps)", "Sobre"};
         new AlertDialog.Builder(this).setTitle("Gf Drps").setItems(items, (d, w) -> {
             switch (w) {
@@ -642,7 +806,8 @@ public final class MainActivity extends Activity {
                 case 3: midi.clearBindings(); toast("Mapeamentos apagados"); break;
                 case 4: midi.connect(); break;
                 case 5: engine.midiSync = !engine.midiSync; toast(engine.midiSync ? "O tempo segue o clock MIDI externo (start/stop também)" : "Clock MIDI externo desligado"); break;
-                case 6: exportMix(); break;
+                case 6: dynamicsDialog(); break;
+                case 7: exportMix(); break;
                 default: about(); break;
             }
         }).show();
@@ -702,21 +867,57 @@ public final class MainActivity extends Activity {
 
     private void gestureMenu() {
         final Slot s = engine.slots[sel];
-        if (s.gestures.state != GestureRecorder.PLAYING) { toast("Grave um gesto primeiro (●)"); return; }
-        String[] items = {"Quantizar na grade 1/16", "Quantizar na grade 1/8", "Quantizar na grade 1/4",
+        final boolean has = s.gestures.state == GestureRecorder.PLAYING;
+        String[] items = {"Salvar como preset de gesto…", "Carregar preset de gesto…", "Apagar um preset…",
+                "Quantizar na grade 1/16", "Quantizar na grade 1/8", "Quantizar na grade 1/4",
                 "Deslocar tudo ◀ 1/16", "Deslocar tudo ▶ 1/16",
-                "Apagar só os movimentos do pad de efeito", "Apagar só os toques da waveform"};
-        new AlertDialog.Builder(this).setTitle("Editar gesto gravado").setItems(items, (d, w) -> {
+                "Apagar só os movimentos do pad de efeito", "Apagar só os toques da waveform", "Apagar o gesto inteiro"};
+        new AlertDialog.Builder(this).setTitle("Gesto gravado").setItems(items, (d, w) -> {
+            if (w == 1) { loadGesturePreset(); return; }
+            if (w == 2) { deleteGesturePreset(); return; }
+            if (!has) { toast("Grave um gesto primeiro (●)"); return; }
             switch (w) {
-                case 0: engine.quantizeGestures(sel, 0.25); break;
-                case 1: engine.quantizeGestures(sel, 0.5); break;
-                case 2: engine.quantizeGestures(sel, 1.0); break;
-                case 3: engine.nudgeGestures(sel, -0.25); break;
-                case 4: engine.nudgeGestures(sel, 0.25); break;
-                case 5: engine.removeGestureKind(sel, true); break;
-                default: engine.removeGestureKind(sel, false); break;
+                case 0: saveGesturePreset(); return;
+                case 3: engine.quantizeGestures(sel, 0.25); break;
+                case 4: engine.quantizeGestures(sel, 0.5); break;
+                case 5: engine.quantizeGestures(sel, 1.0); break;
+                case 6: engine.nudgeGestures(sel, -0.25); break;
+                case 7: engine.nudgeGestures(sel, 0.25); break;
+                case 8: engine.removeGestureKind(sel, true); break;
+                case 9: engine.removeGestureKind(sel, false); break;
+                default: engine.clearGestures(sel); break;
             }
             toast("Gesto editado (undo desfaz)");
+        }).show();
+    }
+
+    private void saveGesturePreset() {
+        final EditText et = new EditText(this);
+        et.setText("gesto " + (ProjectStore.listGesturePresets(this).length + 1));
+        new AlertDialog.Builder(this).setTitle("Nome do preset de gesto").setView(et).setPositiveButton("Salvar", (d, w) -> {
+            try { ProjectStore.saveGesturePreset(this, engine.slots[sel].gestures, et.getText().toString()); toast("Preset salvo"); }
+            catch (Exception e) { toast("Erro: " + e.getMessage()); }
+        }).setNegativeButton("Cancelar", null).show();
+    }
+
+    private void loadGesturePreset() {
+        final String[] names = ProjectStore.listGesturePresets(this);
+        if (names.length == 0) { toast("Nenhum preset de gesto salvo"); return; }
+        new AlertDialog.Builder(this).setTitle("Carregar preset de gesto").setItems(names, (d, w) -> {
+            try {
+                engine.pushUndo(sel);
+                ProjectStore.loadGesturePreset(this, engine, sel, names[w]);
+                toast("Preset carregado na track " + (sel + 1) + " — toca no loop");
+                ui.postDelayed(this::refresh, 150);
+            } catch (Exception e) { toast("Erro: " + e.getMessage()); }
+        }).show();
+    }
+
+    private void deleteGesturePreset() {
+        final String[] names = ProjectStore.listGesturePresets(this);
+        if (names.length == 0) { toast("Nenhum preset de gesto salvo"); return; }
+        new AlertDialog.Builder(this).setTitle("Apagar preset de gesto").setItems(names, (d, w) -> {
+            ProjectStore.deleteGesturePreset(this, names[w]); toast("Preset apagado");
         }).show();
     }
 
@@ -753,11 +954,11 @@ public final class MainActivity extends Activity {
                 .add(modeTiles[0], "Modos: Slicer Looper Bow Tape Scratch Arp Keys Loop")
                 .add(volS, "Volume do slot").add(attS, "Attack").add(decS, "Decay").add(susS, "Sustain").add(relS, "Release").add(panS, "Pan").add(sizeS, "Tamanho do grão (Bow)")
                 .add(divTiles[0], "Fatias / grade (deslize p/ mudar)").add(ctxT, "Ação do modo: auto-fatiar/direção/P-P/stretch")
-                .add(edT, "Editar fatias · região (Keys) · taxa do Arp (deslize)").add(trValT, "Transposição").add(glideT, "Legato (Keys)")
-                .add(recGestT, "Gravar gestos (segure: editar)").add(barsT, "Compassos do gesto").add(infT, "Sustentar (∞)")
+                .add(edT, "Editar fatias · região (Keys) · taxa do Arp (deslize)").add(trValT, "Transposição (deslize = pitch bend, 2 s = valor)").add(glideT, "Legato (Keys)")
+                .add(recGestT, "Gestos: gravar · overdub (segure: menu/presets)").add(barsT, "Compassos do gesto").add(infT, "Sustentar (∞)")
                 .add(lkT, "Latch: som continua ao soltar").add(qT, "Quantizar: deslize para mudar a grade")
                 .add(autoT, "Slicer: toca as fatias sozinho").add(shufT, "Shuffle do auto-play").add(zoomT, "Zoom: toque ou deslize (barra no topo rola)")
-                .add(pad, "Pad XY do efeito (entra nos gestos)").add(fxTiles[0], "Efeitos (filtro: 2 toques = LP/HP)")
+                .add(pad, "Pad XY do efeito (entra nos gestos)").add(fxTiles[0], "Efeitos (2 toques = opções do efeito)")
                 .add(latchT, "Hold: efeito fica ligado").add(syncT, "Delay sincronizado ao BPM").add(toneT, "LP/HP do Delay/Reverb (deslize: corte)").add(masterFxT, "M: efeito no master")
                 .add(playT, "Play / Stop").add(strips[0], "Tracks (segure: menu)").add(addT, "Adicionar track (até 12)").add(micT, "Gravar (tela de gravação)").add(mixT, "Resample do mix");
         ((ViewGroup) getWindow().getDecorView()).addView(helpOverlay, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -777,9 +978,9 @@ public final class MainActivity extends Activity {
                 + "Scratch – arraste o dedo como um vinil.\n"
                 + "Arpeggiator – segure dedos: dispara as fatias sob os dedos no ritmo do BPM; botão rosa = direção (UP, DN, U-D, RND, ORD), botão amarelo = taxa: toque para trocar ou deslize na horizontal (1/1 a 1/64, com tercinas); os números = nº de fatias (também deslizam).\n"
                 + "Keyboard – teclas cromáticas (∞ sustenta, curva = legato); o botão de marcador edita início/fim do sample (use o zoom).\n"
-                + "Loop Player – o primeiro toque liga o loop sincronizado; STR (stretch) deixa o BPM mudar o tempo sem mudar a altura.\n\n"
+                + "Loop Player – o dedo é a agulha: tocar/arrastar leva o playhead para aquele ponto (o primeiro toque liga o loop sincronizado; use Stop para parar); STR (stretch) deixa o BPM mudar o tempo sem mudar a altura.\n\n"
                 + "◀| (esquerda) inverte o sample. Filtro: toque de novo no ícone do filtro para alternar passa-baixas/passa-altas (o ícone muda).\n■ para tudo: vozes, loops e gestos; ▶ retoma.\n"
-                + "Refazer (redo) fica ao lado do desfazer. Zoom: toque ou deslize o dedo no botão. LP/HP: botão do Delay/Reverb liga o filtro do efeito; deslize para mudar o corte. + adiciona tracks (até 12). ● mic abre a tela de gravação; ■ SALVAR grava no slot.\nSliders: volume · attack · decay · sustain · release · pan.\n"
+                + "Efeitos: toque 2x em um efeito para abrir suas opções (forma do amp mod/gate, sync e grade do delay, LP/HP...). Master: menu Gf → compressor e limiter. Gestos: ● grava; ● de novo termina e mantém; ● com o gesto tocando = overdub; segure ● para presets/editar. Transposição: deslize no valor = pitch bend; segure 2 s para digitar o pitch. Zoom: deslizar para cima/baixo move a faixa. Slicer com legato: deslizar entre fatias faz glissando. Arp: botão ✎ edita as fatias, o botão amarelo é a taxa. Botões que não servem ao modo somem. Importar: escolha início e tamanho do trecho.\nRefazer (redo) fica ao lado do desfazer. Zoom: toque ou deslize o dedo no botão. LP/HP: botão do Delay/Reverb liga o filtro do efeito; deslize para mudar o corte. + adiciona tracks (até 12). ● mic abre a tela de gravação; ■ SALVAR grava no slot.\nSliders: volume · attack · decay · sustain · release · pan.\n"
                 + "● arma a gravação de gestos: ela começa sozinha no primeiro toque (waveform ou pad de efeito), dura N compassos e repete em loop.\n"
                 + "Latch: o som continua ao soltar e ao trocar de modo (um novo gesto ou desligar o latch solta). Q: quantiza os toques do Slicer/Keyboard na grade do BPM (deslize no botão para mudar a grade). ▶ (Slicer): toca as fatias sozinho, 🎲 embaralha. sync: delay travado no BPM. Arrastar o BPM: horizontal.\nRodapé: toque num slot para escolher, segure para o menu; mic grava no slot; círculos duplos gravam o mix (resample).";
         new AlertDialog.Builder(this).setTitle("Como tocar").setMessage(t).setPositiveButton("OK", null).show();

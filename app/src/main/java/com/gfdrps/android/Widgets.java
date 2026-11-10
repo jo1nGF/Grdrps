@@ -27,7 +27,15 @@ public final class Widgets {
         private float downX, lastX; private boolean dragging;
 
         /** Horizontal slide after pressing the tile. total = px since the press, delta = px since the last event. */
-        public interface Drag { void drag(float total, float delta); void end(); }
+        public interface Drag {
+            void drag(float total, float delta);
+            void end();
+            /** Vertical slide (px since the press / since the last event; up is negative). */
+            default void vertical(float total, float delta) { }
+        }
+        private long longMs = 450;
+        public Tile longPressMs(long ms) { longMs = ms; return this; }
+        private float downY, lastY;
         public Tile onDrag(Drag d) { drag = d; return this; }
 
         public Tile(Context c) {
@@ -53,23 +61,23 @@ public final class Widgets {
         @Override public boolean onTouchEvent(MotionEvent e) {
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    pressed = true; downAt = e.getEventTime(); downX = lastX = e.getX(); dragging = false;
+                    pressed = true; downAt = e.getEventTime(); downX = lastX = e.getX(); downY = lastY = e.getY(); dragging = false;
                     if (drag != null && getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
                     invalidate(); return true;
                 case MotionEvent.ACTION_MOVE:
                     if (drag != null) {
-                        float tot = e.getX() - downX;
+                        float tot = e.getX() - downX, toty = e.getY() - downY;
                         float slop = getResources().getDisplayMetrics().density * 10f;
-                        if (!dragging && Math.abs(tot) > slop) dragging = true;
-                        if (dragging) { drag.drag(tot, e.getX() - lastX); }
-                        lastX = e.getX();
+                        if (!dragging && (Math.abs(tot) > slop || Math.abs(toty) > slop)) dragging = true;
+                        if (dragging) { drag.drag(tot, e.getX() - lastX); drag.vertical(toty, e.getY() - lastY); }
+                        lastX = e.getX(); lastY = e.getY();
                     }
                     return true;
                 case MotionEvent.ACTION_UP:
                     pressed = false; invalidate();
                     if (dragging) { dragging = false; if (drag != null) drag.end(); return true; }
                     if (e.getX() >= 0 && e.getX() <= getWidth() && e.getY() >= 0 && e.getY() <= getHeight()) {
-                        if (longClick != null && e.getEventTime() - downAt > 450) longClick.run();
+                        if (longClick != null && e.getEventTime() - downAt > longMs) longClick.run();
                         else if (click != null) click.run();
                     }
                     return true;
@@ -123,7 +131,8 @@ public final class Widgets {
             if (a == MotionEvent.ACTION_DOWN) getParent().requestDisallowInterceptTouchEvent(true);
             if (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_MOVE) {
                 float pad = Math.min(getWidth(), getHeight()) * 0.5f;
-                float v = vertical ? 1f - (e.getY() - pad) / Math.max(1f, getHeight() - 2 * pad)
+                float top = (vertical && icon >= 0) ? getWidth() * 0.95f : 0f;     // header with the identifying icon
+                float v = vertical ? 1f - (e.getY() - top - pad) / Math.max(1f, getHeight() - top - 2 * pad)
                         : (e.getX() - pad) / Math.max(1f, getWidth() - 2 * pad);
                 set(v);
                 if (cb != null) cb.onValue(value);
@@ -138,11 +147,17 @@ public final class Widgets {
             c.drawRect(1, 1, w - 1, h - 1, p);
             float pad = Math.min(w, h) * 0.5f;
             float knob = Math.min(w, h) * 0.42f;
+            float top = (vertical && icon >= 0) ? w * 0.95f : 0f;
             float cx, cy;
+            if (top > 0) {                              // icon header: tells what the slider does
+                p.setColor(accent);
+                Theme.icon(c, icon, w / 2, top * 0.5f + 1, w * 0.3f, p);
+                p.setStyle(Paint.Style.FILL);
+            }
             p.setColor(0xFF3A414B);
             if (vertical) {
-                cx = w / 2; cy = pad + (1f - value) * (h - 2 * pad);
-                c.drawRect(cx - 2, pad, cx + 2, h - pad, p);
+                cx = w / 2; cy = top + pad + (1f - value) * (h - top - 2 * pad);
+                c.drawRect(cx - 2, top + pad, cx + 2, h - pad, p);
                 p.setColor(accent);
                 c.drawRect(cx - 2, cy, cx + 2, h - pad, p);
             } else {
@@ -151,12 +166,9 @@ public final class Widgets {
                 p.setColor(accent);
                 c.drawRect(pad, cy - 2, cx, cy + 2, p);
             }
+            p.setStyle(Paint.Style.FILL);
             p.setColor(0xFFE9EDF2);
             c.drawCircle(cx, cy, knob, p);
-            if (icon >= 0) {
-                p.setColor(0xFF22262D);
-                Theme.icon(c, icon, cx, cy, knob * 0.55f, p);
-            }
         }
     }
 }
