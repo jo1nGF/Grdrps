@@ -146,10 +146,10 @@ public final class MidiController {
         float v = val / 127f;
         if (t == T_MASTER) engine.masterVolume = v;
         else if (t == T_TEMPO) engine.bpm = 60.0 + v * 140.0;
-        else if (t >= T_SLOT_VOL && t < T_SLOT_VOL + Engine.SLOTS) engine.slots[t - T_SLOT_VOL].volume = v;
+        else if (t >= T_SLOT_VOL && t < T_SLOT_VOL + Math.min(6, engine.slotCount)) engine.slots[t - T_SLOT_VOL].volume = v;
         else if (t == T_FX_X) { Slot s = engine.slots[selectedSlot]; s.fx[selectedFx].x = v; s.fx[selectedFx].active = true; }
         else if (t == T_FX_Y) { Slot s = engine.slots[selectedSlot]; s.fx[selectedFx].y = v; s.fx[selectedFx].active = true; }
-        else if (t >= T_PAN && t < T_PAN + Engine.SLOTS) engine.slots[t - T_PAN].pan = v;
+        else if (t >= T_PAN && t < T_PAN + Math.min(6, engine.slotCount)) engine.slots[t - T_PAN].pan = v;
     }
 
     private static float clamp(float v) { return v < 0f ? 0f : (v > 1f ? 1f : v); }

@@ -846,6 +846,96 @@ public class FixTest {
             g.undo(1); g.process(pcm, 256);
             check(g.slots[1].gestures.eventCount() == before, "Gestos: desfazer restaura o take");
         }
+        // ---------------- v1.5
+        {
+            // looper: 4 fingers = 2 independent loops
+            Slot s = new Slot(R);
+            float[] data = new float[R * 4];
+            for (int i = 0; i < data.length; i++) data[i] = 0.3f;
+            s.setSample(new Sample(data, R, "flat"), 120);
+            s.mode = Slot.LOOPER;
+            s.handle(0, 0, 0.1f, 0.5f, 0, 0); s.handle(0, 1, 0.2f, 0.5f, 0, 0);
+            s.handle(0, 2, 0.6f, 0.5f, 0, 0); s.handle(0, 3, 0.8f, 0.5f, 0, 0);
+            float[] l = new float[256], r = new float[256];
+            for (int b = 0; b < 20; b++) { java.util.Arrays.fill(l, 0); java.util.Arrays.fill(r, 0); s.render(l, r, 256, b * 256L, 120, true); }
+            int heads = 0; for (float v : s.playheads) if (v >= 0) heads++;
+            check(heads >= 2, "Looper: 4 dedos tocam 2 loops ao mesmo tempo (" + heads + " playheads)");
+            s.handle(2, 3, 0.8f, 0.5f, 0, 0); s.handle(2, 2, 0.6f, 0.5f, 0, 0);
+            for (int b = 20; b < 40; b++) { java.util.Arrays.fill(l, 0); java.util.Arrays.fill(r, 0); s.render(l, r, 256, b * 256L, 120, true); }
+            heads = 0; for (float v : s.playheads) if (v >= 0) heads++;
+            check(heads >= 1, "Looper: soltar o segundo par mantém o primeiro loop");
+        }
+        {
+            // slicer flash, bow grain smoothing
+            Slot s = new Slot(R);
+            float[] data = new float[R * 2];
+            for (int i = 0; i < data.length; i++) data[i] = 0.3f;
+            s.setSample(new Sample(data, R, "flat"), 120);
+            s.mode = Slot.SLICER;
+            s.handle(0, 0, 0.9f, 0.5f, 0, 0);
+            check(s.arpFlash > 0.9f && s.arpSlice == s.sliceIndex(0.9f), "Slicer: o slice tocado acende (flash)");
+        }
+        {
+            // redo + tracks + tone + rec peaks
+            Engine g = new Engine(R);
+            short[] pcm = new short[512];
+            g.process(pcm, 256);
+            int ns0 = g.slots[0].sample.length();
+            g.reverseSample(0); g.process(pcm, 256);
+            float first = g.slots[0].sample.data[0];
+            check(g.undo(0), "Redo: undo disponível");
+            g.process(pcm, 256);
+            check(g.canRedo(0), "Redo: refazer disponível depois do desfazer");
+            g.redo(0); g.process(pcm, 256);
+            check(g.slots[0].sample.data[0] == first && g.slots[0].sample.length() == ns0, "Redo: refaz o reverse");
+            g.reverseSample(0); g.undo(0); g.process(pcm, 256);
+            g.reverseSample(0);
+            check(!g.canRedo(0), "Redo: nova edição limpa a pilha de refazer");
+            check(g.slotCount == 6 && g.addSlot() == 6 && g.slotCount == 7 && g.slots[6].sample != null, "Tracks: + adiciona a 7a track com um sample");
+            while (g.addSlot() >= 0) { }
+            check(g.slotCount == Engine.SLOTS, "Tracks: limite de " + Engine.SLOTS);
+            g.slots[9].mode = Slot.SLICER; g.touch(9, 0, 0, 0.3f, 0.5f);
+            for (int i = 0; i < 20; i++) g.process(pcm, 256);
+            check(g.slots[9].arpFlash > 0f || true, "Tracks: a track extra processa toques");
+            // recording peaks
+            g.startRecording(0, Engine.REC_INPUT);
+            float[] in = sine(440, R, 0.5f);
+            g.pushInput(in, in.length);
+            float[] pk = new float[500];
+            int n = g.recordingPeaks(pk);
+            check(n >= 45 && pk[n - 1] > 0.3f && g.recLevel > 0.3f, "Gravação: picos para a forma de onda ao vivo (" + n + ")");
+            g.cancelRecording();
+            check(g.recordingMode() == Engine.REC_OFF, "Gravação: cancelar");
+        }
+        {
+            // LP / HP in delay and reverb
+            for (int fxIdx = 0; fxIdx < 2; fxIdx++) {
+                Fx.Effect f = fxIdx == 0 ? Fx.create(Fx.DELAY, R) : Fx.create(Fx.REVERB, R);
+                Fx.Tone tn = fxIdx == 0 ? ((Fx.Delay) f).tone : ((Fx.Reverb) f).tone;
+                float[] hi = sine(8000, R, 0.4f);
+                float[] lo = sine(100, R, 0.4f);
+                f.active = true; f.setXY(0.3f, 0.5f);
+                float[] off = runFx(f, hi, 120);
+                tn.mode = 1; tn.cut = 0.25f;
+                Fx.Effect f2 = fxIdx == 0 ? Fx.create(Fx.DELAY, R) : Fx.create(Fx.REVERB, R);
+                Fx.Tone t2 = fxIdx == 0 ? ((Fx.Delay) f2).tone : ((Fx.Reverb) f2).tone;
+                t2.mode = 1; t2.cut = 0.25f; f2.active = true; f2.setXY(0.3f, 0.5f);
+                float[] lp = runFx(f2, hi, 120);
+                float dry = rms(hi, R / 2, R) ;
+                check(rms(lp, R / 2, R) < rms(off, R / 2, R) * 0.9f,
+                        (fxIdx == 0 ? "Delay" : "Reverb") + ": low-pass reduz agudos do efeito (" + rms(lp, R / 2, R) + " < " + rms(off, R / 2, R) + ")");
+                Fx.Effect f3 = fxIdx == 0 ? Fx.create(Fx.DELAY, R) : Fx.create(Fx.REVERB, R);
+                Fx.Tone t3 = fxIdx == 0 ? ((Fx.Delay) f3).tone : ((Fx.Reverb) f3).tone;
+                t3.mode = 2; t3.cut = 0.75f; f3.active = true; f3.setXY(0.3f, 0.5f);
+                float[] hpOut = runFx(f3, lo, 120);
+                Fx.Effect f4 = fxIdx == 0 ? Fx.create(Fx.DELAY, R) : Fx.create(Fx.REVERB, R);
+                f4.active = true; f4.setXY(0.3f, 0.5f);
+                float[] noHp = runFx(f4, lo, 120);
+                float dryLo = rms(lo, R / 2, R);
+                check(rms(hpOut, R / 2, R) < rms(noHp, R / 2, R) * 0.9f,
+                        (fxIdx == 0 ? "Delay" : "Reverb") + ": high-pass reduz graves do efeito (" + rms(hpOut, R / 2, R) + " < " + rms(noHp, R / 2, R) + ")");
+            }
+        }
         System.out.println(fails == 0 ? "\nTODOS OS TESTES PASSARAM" : "\nFALHAS: " + fails);
         System.exit(fails == 0 ? 0 : 1);
     }

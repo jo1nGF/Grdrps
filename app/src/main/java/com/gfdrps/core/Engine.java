@@ -4,13 +4,15 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 
 /** Mixes the 6 slots, master FX, metronome, transport clock, gesture playback and resampling. */
 public final class Engine {
-    public static final int SLOTS = 6, BLOCK = 256;
+    /** SLOTS = most tracks the app can hold; {@link #slotCount} of them are in use (starts at 6, "+" adds more). */
+    public static final int SLOTS = 12, START_SLOTS = 6, BLOCK = 256;
     public static final int REC_OFF = 0, REC_INPUT = 1, REC_MIX = 2;
 
     public final int rate;
     public final Slot[] slots = new Slot[SLOTS];
     public final Fx.Effect[] master = new Fx.Effect[Fx.COUNT];
 
+    public volatile int slotCount = START_SLOTS;
     public volatile double bpm = 120.0;
     public volatile float masterVolume = 0.8f;
     public volatile boolean playing = true, metronome = false;
@@ -35,6 +37,10 @@ public final class Engine {
     private float[] recBuf = new float[0];
     private int recLen;
     public volatile int recSeconds;
+    /** Live level (0..1) and a 50 per second peak history of the running recording, for the recording screen. */
+    public volatile float recLevel;
+    private float[] recPk = new float[64];
+    private int recPkN, recPkAcc; private float recPkMax;
 
     private final float[] mixL = new float[Slot.MAX_BLOCK], mixR = new float[Slot.MAX_BLOCK], recTmp = new float[Slot.MAX_BLOCK];
 
@@ -42,8 +48,20 @@ public final class Engine {
         this.rate = rate;
         for (int i = 0; i < SLOTS; i++) slots[i] = new Slot(rate);
         for (int i = 0; i < Fx.COUNT; i++) master[i] = Fx.create(i, rate);
-        for (int i = 0; i < SLOTS; i++) slots[i].setSample(DemoSynth.make(i, rate, bpm), bpm);
+        for (int i = 0; i < START_SLOTS; i++) slots[i].setSample(DemoSynth.make(i, rate, bpm), bpm);
     }
+
+    /** Adds one more track (up to {@link #SLOTS}). Returns its index or -1 when full. The new track starts with a demo loop. */
+    public synchronized int addSlot() {
+        int n = slotCount;
+        if (n >= SLOTS) return -1;
+        if (slots[n].sample == null) slots[n].setSample(DemoSynth.make(n, rate, bpm), bpm);
+        slotCount = n + 1;
+        return n;
+    }
+
+    /** Makes sure at least n tracks are in use (project load). */
+    public synchronized void ensureSlots(int n) { while (slotCount < Math.min(SLOTS, n)) addSlot(); }
 
     // ---------------------------------------------------------------- control (any thread)
 
@@ -98,6 +116,7 @@ public final class Engine {
         u.gs = slots[slot].gestures.snap();
         if (undo[slot] == null) undo[slot] = new java.util.ArrayDeque<>();
         undo[slot].push(u);
+        if (redo[slot] != null) redo[slot].clear();          // a new edit ends the redo chain
         while (undo[slot].size() > 8) undo[slot].removeLast();
         // memory budget: undo keeps old samples alive, so drop the oldest steps if they add up to too much
         for (;;) {
@@ -113,17 +132,45 @@ public final class Engine {
         }
     }
 
-    public synchronized void clearUndo() { for (int i = 0; i < SLOTS; i++) if (undo[i] != null) undo[i].clear(); }
+    public synchronized void clearUndo() { for (int i = 0; i < SLOTS; i++) { if (undo[i] != null) undo[i].clear(); if (redo[i] != null) redo[i].clear(); } }
 
     public synchronized boolean canUndo(int slot) { return undo[slot] != null && !undo[slot].isEmpty(); }
 
-    public synchronized boolean undo(int slot) {
-        if (!canUndo(slot)) return false;
-        final UndoItem u = undo[slot].pop();
+    @SuppressWarnings("unchecked")
+    private final java.util.ArrayDeque<UndoItem>[] redo = new java.util.ArrayDeque[SLOTS];
+
+    public synchronized boolean canRedo(int slot) { return redo[slot] != null && !redo[slot].isEmpty(); }
+
+    private UndoItem current(int slot) {
+        UndoItem u = new UndoItem();
+        u.sn = slots[slot].snapshot();
+        u.gs = slots[slot].gestures.snap();
+        return u;
+    }
+
+    private void apply(int slot, UndoItem u) {
         post(() -> {
             slots[slot].restore(u.sn);
             slots[slot].gestures.restore(u.gs, (t, id, x, y) -> emitGesture(slot, t, id, x, y));
         });
+    }
+
+    public synchronized boolean undo(int slot) {
+        if (!canUndo(slot)) return false;
+        final UndoItem u = undo[slot].pop();
+        if (redo[slot] == null) redo[slot] = new java.util.ArrayDeque<>();
+        redo[slot].push(current(slot));
+        while (redo[slot].size() > 8) redo[slot].removeLast();
+        apply(slot, u);
+        return true;
+    }
+
+    public synchronized boolean redo(int slot) {
+        if (!canRedo(slot)) return false;
+        final UndoItem u = redo[slot].pop();
+        if (undo[slot] == null) undo[slot] = new java.util.ArrayDeque<>();
+        undo[slot].push(current(slot));
+        apply(slot, u);
         return true;
     }
 
@@ -225,7 +272,7 @@ public final class Engine {
     public void startRecording(int slot, int mode) {
         synchronized (recLock) {
             recBuf = new float[rate * 60];
-            recLen = 0;
+            recLen = 0; recPkN = 0; recPkAcc = 0; recPkMax = 0f; recLevel = 0f;
             recSlot = slot;
             recMode = mode;
         }
@@ -243,6 +290,18 @@ public final class Engine {
             int c = Math.min(room, n);
             System.arraycopy(d, off, recBuf, recLen, c);
             recLen += c;
+            final int per = Math.max(1, rate / 50);
+            float lv = 0f;
+            for (int i = 0; i < c; i++) {
+                float a = Math.abs(d[off + i]);
+                if (a > lv) lv = a;
+                if (a > recPkMax) recPkMax = a;
+                if (++recPkAcc >= per) {
+                    if (recPkN == recPk.length) recPk = java.util.Arrays.copyOf(recPk, recPk.length * 2);
+                    recPk[recPkN++] = Math.min(1f, recPkMax); recPkMax = 0f; recPkAcc = 0;
+                }
+            }
+            recLevel = Math.min(1f, lv);
             recSeconds = recLen / rate;
         }
     }
@@ -265,6 +324,18 @@ public final class Engine {
     }
 
     public int recordingMode() { return recMode; }
+
+    /** Copies the newest peaks (50 per second) into out, oldest first. Returns how many were written (the rest of out untouched). */
+    public int recordingPeaks(float[] out) {
+        synchronized (recLock) {
+            int n = Math.min(out.length, recPkN);
+            System.arraycopy(recPk, recPkN - n, out, 0, n);
+            return n;
+        }
+    }
+
+    /** Throws the running capture away. */
+    public void cancelRecording() { synchronized (recLock) { recMode = REC_OFF; recLen = 0; recPkN = 0; recLevel = 0f; } }
 
     // ---------------------------------------------------------------- audio thread
 
@@ -302,7 +373,8 @@ public final class Engine {
         double b = bpm;
         final double beatNow = beatAcc;
         // gesture playback
-        for (int i = 0; i < SLOTS; i++) {
+        final int sc = slotCount;
+        for (int i = 0; i < sc; i++) {
             final Slot s = slots[i];
             final int si = i;
             s.gestures.update(beatNow, playing, (t, id, x, y) -> emitGesture(si, t, id, x, y));
@@ -316,12 +388,12 @@ public final class Engine {
             else s.handle(e.type, e.id, e.x, e.y, frame, beatNow);
             s.gestures.add(e.type, e.id, e.x, e.y, beatNow);
         }
-        for (int i = 0; i < SLOTS; i++) if (slots[i].requestTransport) { slots[i].requestTransport = false; playing = true; }
+        for (int i = 0; i < sc; i++) if (slots[i].requestTransport) { slots[i].requestTransport = false; playing = true; }
         java.util.Arrays.fill(mixL, 0, n, 0f);
         java.util.Arrays.fill(mixR, 0, n, 0f);
         boolean anySolo = false;
         final double gridBeat = playing ? beatNow : freeBeat;     // arp keeps running while the transport is stopped
-        for (int i = 0; i < SLOTS; i++) slots[i].render(mixL, mixR, n, frame, b, playing, gridBeat);
+        for (int i = 0; i < sc; i++) slots[i].render(mixL, mixR, n, frame, b, playing, gridBeat);
         for (int i = 0; i < Fx.COUNT; i++) master[i].process(mixL, mixR, n, b);
         float mv = masterVolume;
         float pl = 0f, pr = 0f;

@@ -18,6 +18,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.Toast;
 
@@ -46,11 +48,15 @@ public final class MainActivity extends Activity {
     private final Widgets.Tile[] divTiles = new Widgets.Tile[Slot.DIVS.length];
     private final Widgets.Tile[] fxTiles = new Widgets.Tile[Fx.COUNT];
     private final SlotStrip[] strips = new SlotStrip[Engine.SLOTS];
-    private Widgets.Tile revT, ctxT, edT, glideT, infT, recGestT, barsT, metroT, playT, micT, mixT, trValT, masterFxT, latchT, lkT, qT, autoT, shufT, syncT, zoomT, undoT, gfT, fileT, stopT, helpT;
+    private Widgets.Tile revT, ctxT, edT, glideT, infT, recGestT, barsT, metroT, playT, micT, mixT, trValT, masterFxT, latchT, lkT, qT, autoT, shufT, syncT, zoomT, undoT, redoT, toneT, addT, gfT, fileT, stopT, helpT;
     private Widgets.Slider volS, attS, decS, susS, relS, panS, masterS, sizeS;
     private HelpOverlay helpOverlay;
     private BpmView bpmView;
     private int pendingMicMode = Engine.REC_OFF;
+    private FrameLayout frame;
+    private HorizontalScrollView stripScroll;
+    private RecordView recView;
+    private float dp(float v) { return v * getResources().getDisplayMetrics().density; }
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -149,6 +155,9 @@ public final class MainActivity extends Activity {
         undoT = tile().text("undo").textScale(0.32f).accent(0xFFFF9A2E).onClick(() -> {
             if (engine.undo(sel)) { toast("Desfeito"); ui.postDelayed(this::refresh, 120); } else toast("Nada para desfazer"); });
         r2.addView(undoT, lp(1f));
+        redoT = tile().text("redo").textScale(0.32f).accent(0xFF4FD8A0).onClick(() -> {
+            if (engine.redo(sel)) { toast("Refeito"); ui.postDelayed(this::refresh, 120); } else toast("Nada para refazer"); });
+        r2.addView(redoT, lp(1f));
         int[] modeIcons = {Theme.I_SLICER, Theme.I_LOOPER, Theme.I_BOW, Theme.I_TAPE, Theme.I_SCRATCH, Theme.I_ARP, Theme.I_KEYS, Theme.I_LOOPPLAY};
         for (int m = 0; m < 8; m++) {
             final int mm = m;
@@ -173,16 +182,18 @@ public final class MainActivity extends Activity {
         LinearLayout dr = row();
         for (int k = 0; k < Slot.DIVS.length; k++) {
             final int kk = k;
-            divTiles[k] = tile().text(String.valueOf(Slot.DIVS[k])).accent(0xFFFFFFFF).onClick(() -> { engine.slots[sel].div = Slot.DIVS[kk]; refresh(); });
+            divTiles[k] = tile().text(String.valueOf(Slot.DIVS[k])).accent(0xFFFFFFFF).onClick(() -> { engine.slots[sel].div = Slot.DIVS[kk]; refresh(); })
+                    .onDrag(slideSteps(DIV_LIST, () -> engine.slots[sel].div, v -> { engine.slots[sel].div = v; refresh(); }, 22f));
             dr.addView(divTiles[k], lp(1f));
         }
         ctxT = tile().icon(Theme.I_DICE).accent(0xFFFF4FA3).onClick(this::contextAction);   // Slicer: auto-slice · Arp: random
         dr.addView(ctxT, lp(1f));
         edT = tile().icon(Theme.I_MARK).accent(0xFFFFD23F).onClick(() -> {
                     Slot sl = engine.slots[sel];
-                    if (sl.mode == Slot.ARP) { int i = 0; while (i < 3 && ARP_RATES[i] != sl.arpRate) i++; sl.arpRate = ARP_RATES[(i + 1) % 4]; }
+                    if (sl.mode == Slot.ARP) { sl.arpRate = ARP_RATES[(rateIndex(sl.arpRate) + 1) % ARP_RATES.length]; }
                     else if (sl.mode == Slot.SLICER || sl.mode == Slot.KEYBOARD) wave.setEditSlices(!wave.isEditSlices());
                     refresh(); })
+                .onDrag(slideSteps(ARP_RATES, () -> engine.slots[sel].arpRate, v -> { if (engine.slots[sel].mode == Slot.ARP) { engine.slots[sel].arpRate = v; refresh(); } }, 22f))
                 .onLong(() -> {
                     Slot sl = engine.slots[sel];
                     if (sl.mode == Slot.KEYBOARD) { engine.pushUndo(sel); engine.setRegion(sel, 0f, 1f); toast("Região: sample inteiro"); }
@@ -219,8 +230,9 @@ public final class MainActivity extends Activity {
             refresh(); });
         xr.addView(lkT, lp(1.3f));
         qT = tile().text("Q").textScale(0.34f).accent(0xFFFFD23F)
-                .onClick(() -> { Slot s = engine.slots[sel]; s.quantize = !s.quantize; toast(s.quantize ? "Quantizar: toques esperam a grade (1/" + s.arpRate + ")" : "Quantizar desligado"); refresh(); })
-                .onLong(() -> { Slot s = engine.slots[sel]; int i = 0; while (i < 3 && ARP_RATES[i] != s.arpRate) i++; s.arpRate = ARP_RATES[(i + 1) % 4]; toast("Grade 1/" + s.arpRate); refresh(); });
+                .onClick(() -> { Slot s = engine.slots[sel]; s.quantize = !s.quantize; toast(s.quantize ? "Quantizar: toques esperam a grade (" + rateName(s.arpRate) + ") — deslize para mudar" : "Quantizar desligado"); refresh(); })
+                .onDrag(slideSteps(ARP_RATES, () -> engine.slots[sel].arpRate, v -> { engine.slots[sel].arpRate = v; refresh(); }, 22f))
+                .onLong(() -> { Slot s = engine.slots[sel]; s.arpRate = ARP_RATES[(rateIndex(s.arpRate) + 1) % ARP_RATES.length]; toast("Grade " + rateName(s.arpRate)); refresh(); });
         xr.addView(qT, lp(1.3f));
         autoT = tile().icon(Theme.I_PLAY).accent(0xFF3DD6FF).onClick(() -> {
             Slot s = engine.slots[sel]; if (s.mode != Slot.SLICER) { toast("Auto-play é do modo Slicer"); return; }
@@ -229,7 +241,16 @@ public final class MainActivity extends Activity {
         shufT = tile().icon(Theme.I_DICE).accent(0xFFFF4FA3).onClick(() -> {
             Slot s = engine.slots[sel]; s.shuffle = !s.shuffle; toast(s.shuffle ? "Shuffle ligado" : "Shuffle desligado"); refresh(); });
         xr.addView(shufT, lp(1f));
-        zoomT = tile().text("1x").textScale(0.4f).accent(0xFF7CC4FF).onClick(() -> { wave.cycleZoom(); refresh(); }).onLong(() -> { wave.resetZoom(); refresh(); });
+        zoomT = tile().text("1x").textScale(0.4f).accent(0xFF7CC4FF).onClick(() -> { wave.cycleZoom(); refresh(); }).onLong(() -> { wave.resetZoom(); refresh(); })
+                .onDrag(new Widgets.Tile.Drag() {          // slide right = zoom in, left = zoom out (smooth, doubles every 60 dp)
+                    float base = -1f;
+                    @Override public void drag(float total, float delta) {
+                        if (base < 0f) base = wave.zoom();
+                        wave.setZoom((float) (base * Math.pow(2.0, total / dp(60))));
+                        zoomT.text(zoomLabel(wave.zoom()));
+                    }
+                    @Override public void end() { base = -1f; refresh(); }
+                });
         xr.addView(zoomT, lp(1f));
         mid.addView(xr, lpv(1f));
         r3.addView(mid, lp(5.6f));
@@ -249,14 +270,36 @@ public final class MainActivity extends Activity {
             fxCol.addView(fxTiles[f], lpv(1f));
         }
         latchT = tile().text("hold").textScale(0.3f).accent(0xFFFFFFFF).onClick(() -> { pad.setLatch(!pad.isLatch()); latchT.setOn(pad.isLatch()); });
-        fxCol.addView(latchT, lpv(0.8f));
+        fxCol.addView(latchT, lpv(0.7f));
         syncT = tile().text("sync").textScale(0.3f).accent(0xFF3DD6FF).onClick(() -> {
             Fx.Effect ef = masterFx ? engine.master[Fx.DELAY] : engine.slots[sel].fx[Fx.DELAY];
             Fx.Delay d = (Fx.Delay) ef; d.sync = !d.sync;
             if (fxSel != Fx.DELAY) { fxSel = Fx.DELAY; midi.selectedFx = fxSel; pad.select(sel, fxSel, masterFx); }
             toast(d.sync ? "Delay sincronizado com o BPM (notas 1/32 a 1 compasso)" : "Delay livre: 10 ms a 4 s");
             refresh(); });
-        fxCol.addView(syncT, lpv(0.8f));
+        fxCol.addView(syncT, lpv(0.7f));
+        toneT = tile().text("LP/HP").textScale(0.28f).accent(0xFF7CC4FF)
+                .onClick(() -> {
+                    Fx.Tone tn = toneOf();
+                    if (tn == null) {                                     // pick the delay first (LP/HP lives on delay and reverb)
+                        fxSel = Fx.DELAY; midi.selectedFx = fxSel; pad.select(sel, fxSel, masterFx);
+                        tn = toneOf();
+                    }
+                    tn.mode = (tn.mode + 1) % 3;
+                    toast(tn.mode == 0 ? "Filtro do efeito desligado" : (tn.mode == 1 ? "Passa-baixas no efeito — deslize o botão para o corte" : "Passa-altas no efeito — deslize o botão para o corte"));
+                    refresh(); })
+                .onDrag(new Widgets.Tile.Drag() {
+                    float base = -1f;
+                    @Override public void drag(float total, float delta) {
+                        Fx.Tone tn = toneOf(); if (tn == null) return;
+                        if (base < 0f) base = tn.cut;
+                        if (tn.mode == 0) tn.mode = 1;
+                        tn.cut = Math.max(0f, Math.min(1f, base + total / dp(220)));
+                        refreshTone(); pad.invalidate();
+                    }
+                    @Override public void end() { base = -1f; refresh(); }
+                });
+        fxCol.addView(toneT, lpv(0.8f));
         masterFxT = tile().text("M").accent(0xFFFFD23F).onClick(() -> { masterFx = !masterFx; pad.select(sel, fxSel, masterFx); refresh(); });
         fxCol.addView(masterFxT, lpv(0.8f));
         right.addView(fxCol, lp(1f));
@@ -274,19 +317,33 @@ public final class MainActivity extends Activity {
             ui.postDelayed(this::refresh, 100);
         });
         strip.addView(playT, lp(1.2f));
+        LinearLayout stripRow = row();
+        stripScroll = new HorizontalScrollView(this);
+        stripScroll.setHorizontalScrollBarEnabled(false);
+        stripScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        stripScroll.setFillViewport(true);
+        final int screenW = getResources().getDisplayMetrics().widthPixels;
+        final int stripW = Math.round(screenW * 2f / 15.2f);          // six tracks fill the bar; more tracks scroll
         for (int i = 0; i < Engine.SLOTS; i++) {
             strips[i] = new SlotStrip(this, engine, i, new SlotStrip.Callbacks() {
                 @Override public void onSelect(int s) { select(s); }
                 @Override public void onMenu(int s) { select(s); slotMenu(s); }
             });
-            strip.addView(strips[i], lp(2f));
+            stripRow.addView(strips[i], new LinearLayout.LayoutParams(stripW, ViewGroup.LayoutParams.MATCH_PARENT));
+            strips[i].setVisibility(i < engine.slotCount ? View.VISIBLE : View.GONE);
         }
+        addT = tile().text("+").textScale(0.7f).accent(0xFF52D273).onClick(this::addTrack);
+        stripRow.addView(addT, new LinearLayout.LayoutParams(Math.round(stripW * 0.5f), ViewGroup.LayoutParams.MATCH_PARENT));
+        stripScroll.addView(stripRow, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        strip.addView(stripScroll, lp(12f));
         micT = tile().icon(Theme.I_MIC).accent(0xFFFF3B4E).onClick(() -> toggleRecord(Engine.REC_INPUT));
         mixT = tile().icon(Theme.I_MIX).accent(0xFFFFFFFF).onClick(() -> toggleRecord(Engine.REC_MIX));
         strip.addView(micT, lp(1f));
         strip.addView(mixT, lp(1f));
         root.addView(strip, lpv(1.5f));
-        return root;
+        frame = new FrameLayout(this);
+        frame.addView(root, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        return frame;
     }
 
     // ------------------------------------------------------------------ state sync
@@ -319,9 +376,13 @@ public final class MainActivity extends Activity {
         if (s.mode != Slot.SLICER && s.mode != Slot.KEYBOARD && wave.isEditSlices()) wave.setEditSlices(false);
         boolean divOk = s.mode == Slot.SLICER || s.mode == Slot.LOOPER || s.mode == Slot.ARP || s.mode == Slot.TAPE || s.mode == Slot.SCRATCH;
         for (int k = 0; k < Slot.DIVS.length; k++) divTiles[k].setDim(!divOk);
-        zoomT.text(((int) wave.zoom()) + "x");
+        zoomT.text(zoomLabel(wave.zoom()));
         undoT.setDim(!engine.canUndo(sel));
-        if (s.mode == Slot.ARP) { edT.text("1/" + s.arpRate).accent(0xFFFFD23F); edT.setOn(true); edT.setDim(false); }
+        redoT.setDim(!engine.canRedo(sel));
+        refreshTone();
+        for (int i = 0; i < Engine.SLOTS; i++) strips[i].setVisibility(i < engine.slotCount ? View.VISIBLE : View.GONE);
+        addT.setVisibility(engine.slotCount < Engine.SLOTS ? View.VISIBLE : View.GONE);
+        if (s.mode == Slot.ARP) { edT.text(rateName(s.arpRate)).accent(0xFFFFD23F); edT.setOn(true); edT.setDim(false); }
         else { edT.icon(Theme.I_MARK).accent(0xFFFFD23F); edT.setOn(wave.isEditSlices()); edT.setDim(s.mode != Slot.SLICER && s.mode != Slot.KEYBOARD); }
         glideT.setDim(s.mode != Slot.KEYBOARD);
         sizeS.set(s.bowSize);
@@ -334,7 +395,7 @@ public final class MainActivity extends Activity {
         trValT.text((s.transpose > 0 ? "+" : "") + s.transpose);
         lkT.setOn(s.latch);
         boolean qOk = s.mode == Slot.SLICER || s.mode == Slot.KEYBOARD;
-        qT.text("Q 1/" + s.arpRate); qT.setOn(s.quantize && qOk); qT.setDim(!qOk);
+        qT.text("Q " + rateName(s.arpRate)); qT.setOn(s.quantize && qOk); qT.setDim(!qOk);
         autoT.setOn(s.autoPlay); autoT.setDim(s.mode != Slot.SLICER);
         shufT.setOn(s.shuffle); shufT.setDim(s.mode != Slot.SLICER);
         Fx.Delay dly = (Fx.Delay) (masterFx ? engine.master[Fx.DELAY] : s.fx[Fx.DELAY]);
@@ -367,17 +428,68 @@ public final class MainActivity extends Activity {
             playT.icon(engine.playing ? Theme.I_STOP : Theme.I_PLAY);
             playT.setOn(engine.playing);
             bpmView.invalidate();
+            pad.invalidate();
             int rm = engine.recordingMode();
+            if (rm == Engine.REC_OFF && recView != null) hideRecordUi();
             micT.setOn(rm == Engine.REC_INPUT);
             mixT.setOn(rm == Engine.REC_MIX);
-            ui.postDelayed(this, 150);
+            ui.postDelayed(this, 90);
         }
     };
 
     // ------------------------------------------------------------------ actions
 
     private static final String[] ARP_DIR = {"UP", "DN", "U-D", "RND", "ORD"};
-    private static final int[] ARP_RATES = {4, 8, 16, 32};
+    /** Notes per bar: 1/1 .. 1/64 with triplets (3 = 1/2T, 6 = 1/4T, 12 = 1/8T, 24 = 1/16T, 48 = 1/32T). */
+    private static final int[] ARP_RATES = {1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64};
+    private static final int[] DIV_LIST = Slot.DIVS;
+
+    static String rateName(int r) { return r % 3 == 0 ? "1/" + (r * 2 / 3) + "T" : "1/" + r; }
+    private static int rateIndex(int r) {
+        int best = 0;
+        for (int i = 0; i < ARP_RATES.length; i++) if (Math.abs(ARP_RATES[i] - r) < Math.abs(ARP_RATES[best] - r)) best = i;
+        return best;
+    }
+    private static String zoomLabel(float z) { return z < 9.95f && Math.abs(z - Math.round(z)) > 0.05f ? String.format(java.util.Locale.US, "%.1fx", z) : Math.round(z) + "x"; }
+
+    /** Horizontal slide on a tile steps through a list of values: right = next, left = previous, one step per `stepDp`. */
+    private Widgets.Tile.Drag slideSteps(final int[] list, final java.util.function.IntSupplier get, final java.util.function.IntConsumer set, final float stepDp) {
+        return new Widgets.Tile.Drag() {
+            int base = -1, last = -1;
+            @Override public void drag(float total, float delta) {
+                if (base < 0) {
+                    int cur = get.getAsInt(), bi = 0;
+                    for (int i = 0; i < list.length; i++) if (Math.abs(list[i] - cur) < Math.abs(list[bi] - cur)) bi = i;
+                    base = bi; last = bi;
+                }
+                int idx = Math.max(0, Math.min(list.length - 1, base + Math.round(total / dp(stepDp))));
+                if (idx != last) { last = idx; set.accept(list[idx]); }
+            }
+            @Override public void end() { base = -1; last = -1; }
+        };
+    }
+
+    private Fx.Tone toneOf() {
+        if (fxSel != Fx.DELAY && fxSel != Fx.REVERB) return null;
+        return Fx.toneOf(masterFx ? engine.master[fxSel] : engine.slots[sel].fx[fxSel]);
+    }
+
+    private void refreshTone() {
+        Fx.Tone tn = toneOf();
+        if (tn == null) { toneT.text("LP/HP"); toneT.setOn(false); toneT.setDim(true); return; }
+        toneT.setDim(false);
+        toneT.setOn(tn.mode != 0);
+        toneT.text(tn.mode == 0 ? "LP/HP" : Fx.Tone.NAMES[tn.mode] + " " + XYPadView.fmtHz(tn.cutoffHz()));
+    }
+
+    private void addTrack() {
+        int n = engine.addSlot();
+        if (n < 0) { toast("Máximo de " + Engine.SLOTS + " tracks"); return; }
+        refresh();
+        select(n);
+        stripScroll.post(() -> stripScroll.fullScroll(View.FOCUS_RIGHT));
+        toast("Track " + (n + 1) + " adicionada — carregue um som ou grave");
+    }
     private float autoSens = 0.5f;
 
     /** Slicer: detect hits and place markers. Arpeggiator: toggle random order. */
@@ -468,13 +580,43 @@ public final class MainActivity extends Activity {
             toast("Não foi possível abrir o microfone");
             return;
         }
-        toast(mode == Engine.REC_INPUT ? "Gravando microfone no slot " + (sel + 1) : "Gravando o mix no slot " + (sel + 1));
+        showRecordUi(mode);
+    }
+
+    private void showRecordUi(int mode) {
+        hideRecordUi();
+        final boolean full = mode == Engine.REC_INPUT;
+        String title = (full ? "GRAVANDO MICROFONE" : "GRAVANDO O MIX") + " → TRACK " + (sel + 1);
+        recView = new RecordView(this, engine, full, title, new RecordView.Listener() {
+            @Override public void onSave() { finishRecording(); }
+            @Override public void onCancel() { cancelRecording(); }
+        });
+        FrameLayout.LayoutParams lp;
+        if (full) lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        else {      // resample: only a bar over the track strip, so the rest of the screen stays playable
+            int hgt = Math.round(frame.getHeight() * 0.2f);
+            lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.max(hgt, Math.round(dp(64))), Gravity.BOTTOM);
+        }
+        frame.addView(recView, lp);
+    }
+
+    private void hideRecordUi() {
+        if (recView != null) { frame.removeView(recView); recView = null; }
+    }
+
+    private void cancelRecording() {
+        mic.stop();
+        engine.cancelRecording();
+        hideRecordUi();
+        toast("Gravação cancelada");
     }
 
     private void finishRecording() {
         int mode = engine.recordingMode();
         mic.stop();
         boolean ok = engine.stopRecording(mode == Engine.REC_MIX ? "mix" : "rec", engine.rate);
+        hideRecordUi();
+        ui.postDelayed(this::refresh, 150);
         toast(ok ? "Gravação salva no slot " + (sel + 1) : "Nada gravado");
     }
 
@@ -607,17 +749,17 @@ public final class MainActivity extends Activity {
                 .heading("Gf Drps v" + versionName() + " — " + Slot.MODE_NAMES[s.mode]);
         helpOverlay.add(gfT, "Menu: projetos, MIDI, clock, exportar").add(metroT, "Metrônomo").add(bpmView, "BPM: arraste na horizontal ou toque o ritmo")
                 .add(masterS, "Volume master").add(stopT, "Para tudo (vozes, loops, gestos)").add(helpT, "Ajuda (segure: texto)")
-                .add(fileT, "Carregar arquivo no slot").add(revT, "Inverter o sample").add(undoT, "Desfazer (sample, fatias, região, gestos)")
-                .add(modeTiles[0], "Modos: Slicer · Looper · Bow · Tape · Scratch · Arp · Keys · Loop")
+                .add(fileT, "Carregar arquivo na track").add(revT, "Inverter o sample").add(undoT, "Desfazer (sample, fatias, região, gestos)").add(redoT, "Refazer o que foi desfeito")
+                .add(modeTiles[0], "Modos: Slicer Looper Bow Tape Scratch Arp Keys Loop")
                 .add(volS, "Volume do slot").add(attS, "Attack").add(decS, "Decay").add(susS, "Sustain").add(relS, "Release").add(panS, "Pan").add(sizeS, "Tamanho do grão (Bow)")
-                .add(divTiles[0], "Fatias / grade: 0 4 8 16 32").add(ctxT, "Ação do modo: auto-fatiar · direção · ping-pong · stretch")
-                .add(edT, "Editar fatias (Slicer) / região (Keys) / taxa (Arp)").add(trValT, "Transposição").add(glideT, "Legato (Keys)")
-                .add(recGestT, "Gravar gestos: inicia no 1º toque (segure: editar)").add(barsT, "Compassos do gesto").add(infT, "Sustentar (∞)")
-                .add(lkT, "Latch: o som continua ao soltar/trocar de modo").add(qT, "Quantizar na grade (segure: 1/4–1/32)")
-                .add(autoT, "Slicer: toca as fatias sozinho").add(shufT, "Shuffle do auto-play").add(zoomT, "Zoom da waveform (barra no topo rola)")
-                .add(pad, "Pad XY do efeito (também gravado nos gestos)").add(fxTiles[0], "Efeitos (filtro: toque 2x = LP/HP)")
-                .add(latchT, "Hold: efeito fica ligado").add(syncT, "Delay sincronizado com o BPM").add(masterFxT, "M: efeito no master")
-                .add(playT, "Play / Stop").add(strips[0], "Slots (segure: menu, cortar, exportar)").add(micT, "Gravar do microfone").add(mixT, "Resample do mix");
+                .add(divTiles[0], "Fatias / grade (deslize p/ mudar)").add(ctxT, "Ação do modo: auto-fatiar/direção/P-P/stretch")
+                .add(edT, "Editar fatias · região (Keys) · taxa do Arp (deslize)").add(trValT, "Transposição").add(glideT, "Legato (Keys)")
+                .add(recGestT, "Gravar gestos (segure: editar)").add(barsT, "Compassos do gesto").add(infT, "Sustentar (∞)")
+                .add(lkT, "Latch: som continua ao soltar").add(qT, "Quantizar: deslize para mudar a grade")
+                .add(autoT, "Slicer: toca as fatias sozinho").add(shufT, "Shuffle do auto-play").add(zoomT, "Zoom: toque ou deslize (barra no topo rola)")
+                .add(pad, "Pad XY do efeito (entra nos gestos)").add(fxTiles[0], "Efeitos (filtro: 2 toques = LP/HP)")
+                .add(latchT, "Hold: efeito fica ligado").add(syncT, "Delay sincronizado ao BPM").add(toneT, "LP/HP do Delay/Reverb (deslize: corte)").add(masterFxT, "M: efeito no master")
+                .add(playT, "Play / Stop").add(strips[0], "Tracks (segure: menu)").add(addT, "Adicionar track (até 12)").add(micT, "Gravar (tela de gravação)").add(mixT, "Resample do mix");
         ((ViewGroup) getWindow().getDecorView()).addView(helpOverlay, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
@@ -629,17 +771,17 @@ public final class MainActivity extends Activity {
 
     private void helpText() {
         String t = "Slicer – toque numa fatia; altura = volume. Botão de marcador: editar fatias (toque = novo marcador, arraste = mover, toque no marcador = apagar, segurar o botão = voltar à grade). A estrela acha as batidas sozinha.\n"
-                + "Looper – dois dedos definem o loop; cruzar os dedos toca em reverse; P-P liga o ping-pong (vai e volta); 4/8/16/32 prende os marcadores na grade.\n"
+                + "Looper – cada par de dedos define um loop (até 4 loops ao mesmo tempo); cruzar os dedos de um par toca em reverse; P-P liga o ping-pong (vai e volta); 4/8/16/32 prende os marcadores na grade.\n"
                 + "Bow – segure: um grão do som vira textura contínua; posição = x, volume = altura do dedo, slider azul = tamanho do grão; até 4 notas.\n"
                 + "Tape – arraste p/ direita acelera, p/ esquerda inverte; soltar = tape stop. Com 4/8/16/32 a velocidade anda em degraus.\n"
                 + "Scratch – arraste o dedo como um vinil.\n"
-                + "Arpeggiator – segure dedos: dispara as fatias sob os dedos no ritmo do BPM; botão rosa = direção (UP, DN, U-D, RND, ORD), botão amarelo = taxa (1/4–1/32); 0/4/8/16/32 = nº de fatias.\n"
+                + "Arpeggiator – segure dedos: dispara as fatias sob os dedos no ritmo do BPM; botão rosa = direção (UP, DN, U-D, RND, ORD), botão amarelo = taxa: toque para trocar ou deslize na horizontal (1/1 a 1/64, com tercinas); os números = nº de fatias (também deslizam).\n"
                 + "Keyboard – teclas cromáticas (∞ sustenta, curva = legato); o botão de marcador edita início/fim do sample (use o zoom).\n"
                 + "Loop Player – o primeiro toque liga o loop sincronizado; STR (stretch) deixa o BPM mudar o tempo sem mudar a altura.\n\n"
                 + "◀| (esquerda) inverte o sample. Filtro: toque de novo no ícone do filtro para alternar passa-baixas/passa-altas (o ícone muda).\n■ para tudo: vozes, loops e gestos; ▶ retoma.\n"
-                + "Sliders: volume · attack · decay · sustain · release · pan.\n"
+                + "Refazer (redo) fica ao lado do desfazer. Zoom: toque ou deslize o dedo no botão. LP/HP: botão do Delay/Reverb liga o filtro do efeito; deslize para mudar o corte. + adiciona tracks (até 12). ● mic abre a tela de gravação; ■ SALVAR grava no slot.\nSliders: volume · attack · decay · sustain · release · pan.\n"
                 + "● arma a gravação de gestos: ela começa sozinha no primeiro toque (waveform ou pad de efeito), dura N compassos e repete em loop.\n"
-                + "Latch: o som continua ao soltar e ao trocar de modo (um novo gesto ou desligar o latch solta). Q: quantiza os toques do Slicer/Keyboard na grade do BPM (segure para mudar 1/4–1/32). ▶ (Slicer): toca as fatias sozinho, 🎲 embaralha. sync: delay travado no BPM. Arrastar o BPM: horizontal.\nRodapé: toque num slot para escolher, segure para o menu; mic grava no slot; círculos duplos gravam o mix (resample).";
+                + "Latch: o som continua ao soltar e ao trocar de modo (um novo gesto ou desligar o latch solta). Q: quantiza os toques do Slicer/Keyboard na grade do BPM (deslize no botão para mudar a grade). ▶ (Slicer): toca as fatias sozinho, 🎲 embaralha. sync: delay travado no BPM. Arrastar o BPM: horizontal.\nRodapé: toque num slot para escolher, segure para o menu; mic grava no slot; círculos duplos gravam o mix (resample).";
         new AlertDialog.Builder(this).setTitle("Como tocar").setMessage(t).setPositiveButton("OK", null).show();
     }
 

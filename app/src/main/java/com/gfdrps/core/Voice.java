@@ -36,7 +36,7 @@ final class Voice {
 
     // bow
     double center;
-    float grainLen = 2000f;
+    float grainLen = 2000f, grainTgt = 2000f, velCur = 1f;
     final double[] gPos = new double[2];
     final float[] gPh = {0f, 0.5f};
     int rnd = 12345;
@@ -74,6 +74,8 @@ final class Voice {
         touchId = id;
         startedAt = frame;
         env = 0f;
+        grainLen = grainTgt;
+        velCur = vel;
     }
 
     /** Scratch: the finger now points at audio position t (called when a touch update arrives). */
@@ -195,7 +197,8 @@ final class Voice {
                 case STRETCH: s = stretchSample(); break;
                 default: s = playSample(); break;
             }
-            out[i] += s * env * vel * dipG;
+            velCur += (vel - velCur) * 0.004f;       // finger height / sliders glide, no zipper steps
+            out[i] += s * env * velCur * dipG;
         }
     }
 
@@ -242,6 +245,7 @@ final class Voice {
     /** Granular "bow": two overlapping Hann grains. Grain size can change while playing without any jump. */
     private float bowSample() {
         float acc = 0f;
+        grainLen += (grainTgt - grainLen) * 0.0015f;       // grain size slider glides smoothly
         for (int g = 0; g < 2; g++) {
             float ph = gPh[g];
             float w = (float) Math.sin(Math.PI * ph);

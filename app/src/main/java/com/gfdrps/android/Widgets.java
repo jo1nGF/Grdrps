@@ -23,6 +23,12 @@ public final class Widgets {
         private boolean on, dim;
         private float textScale = 0.42f;
         private Runnable click, longClick;
+        private Drag drag;
+        private float downX, lastX; private boolean dragging;
+
+        /** Horizontal slide after pressing the tile. total = px since the press, delta = px since the last event. */
+        public interface Drag { void drag(float total, float delta); void end(); }
+        public Tile onDrag(Drag d) { drag = d; return this; }
 
         public Tile(Context c) {
             super(c);
@@ -46,15 +52,29 @@ public final class Widgets {
 
         @Override public boolean onTouchEvent(MotionEvent e) {
             switch (e.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN: pressed = true; downAt = e.getEventTime(); invalidate(); return true;
+                case MotionEvent.ACTION_DOWN:
+                    pressed = true; downAt = e.getEventTime(); downX = lastX = e.getX(); dragging = false;
+                    if (drag != null && getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
+                    invalidate(); return true;
+                case MotionEvent.ACTION_MOVE:
+                    if (drag != null) {
+                        float tot = e.getX() - downX;
+                        float slop = getResources().getDisplayMetrics().density * 10f;
+                        if (!dragging && Math.abs(tot) > slop) dragging = true;
+                        if (dragging) { drag.drag(tot, e.getX() - lastX); }
+                        lastX = e.getX();
+                    }
+                    return true;
                 case MotionEvent.ACTION_UP:
                     pressed = false; invalidate();
+                    if (dragging) { dragging = false; if (drag != null) drag.end(); return true; }
                     if (e.getX() >= 0 && e.getX() <= getWidth() && e.getY() >= 0 && e.getY() <= getHeight()) {
                         if (longClick != null && e.getEventTime() - downAt > 450) longClick.run();
                         else if (click != null) click.run();
                     }
                     return true;
-                case MotionEvent.ACTION_CANCEL: pressed = false; invalidate(); return true;
+                case MotionEvent.ACTION_CANCEL:
+                    pressed = false; if (dragging && drag != null) drag.end(); dragging = false; invalidate(); return true;
                 default: return true;
             }
         }

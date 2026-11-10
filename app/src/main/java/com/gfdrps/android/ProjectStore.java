@@ -44,6 +44,8 @@ public final class ProjectStore {
             o.put("x", f.x); o.put("y", f.y);
             if (f instanceof com.gfdrps.core.Fx.Delay) o.put("sync", ((com.gfdrps.core.Fx.Delay) f).sync);
             if (f instanceof com.gfdrps.core.Fx.Filter) o.put("hp", ((com.gfdrps.core.Fx.Filter) f).highPass);
+            com.gfdrps.core.Fx.Tone tn = com.gfdrps.core.Fx.toneOf(f);
+            if (tn != null) { o.put("tone", tn.mode); o.put("cut", tn.cut); }
             a.put(o);
         }
         return a;
@@ -57,6 +59,8 @@ public final class ProjectStore {
             fx[k].active = false;
             if (fx[k] instanceof com.gfdrps.core.Fx.Delay) ((com.gfdrps.core.Fx.Delay) fx[k]).sync = o.optBoolean("sync", false);
             if (fx[k] instanceof com.gfdrps.core.Fx.Filter) ((com.gfdrps.core.Fx.Filter) fx[k]).highPass = o.optBoolean("hp", false);
+            com.gfdrps.core.Fx.Tone tn = com.gfdrps.core.Fx.toneOf(fx[k]);
+            if (tn != null) { tn.mode = o.optInt("tone", 0); tn.cut = (float) o.optDouble("cut", 0.5); }
         }
     }
 
@@ -73,8 +77,9 @@ public final class ProjectStore {
         j.put("master", e.masterVolume);
         j.put("mfx", fxJson(e.master));
         j.put("fxHold", e.fxHold);
+        j.put("tracks", e.slotCount);
         JSONArray arr = new JSONArray();
-        for (int i = 0; i < Engine.SLOTS; i++) {
+        for (int i = 0; i < e.slotCount; i++) {
             Slot s = e.slots[i];
             JSONObject o = new JSONObject();
             o.put("mode", s.mode); o.put("volume", s.volume); o.put("attack", s.attack);
@@ -126,6 +131,7 @@ public final class ProjectStore {
         if (mfx != null) fxLoad(mfx, e.master);
         e.clearUndo();
         JSONArray arr = j.getJSONArray("slots");
+        e.ensureSlots(Math.max(j.optInt("tracks", 6), Math.min(Engine.SLOTS, arr.length())));
         for (int i = 0; i < Engine.SLOTS && i < arr.length(); i++) {
             JSONObject o = arr.getJSONObject(i);
             Slot s = e.slots[i];

@@ -66,27 +66,41 @@ final class HelpOverlay extends View {
         p.setStyle(Paint.Style.FILL); p.setColor(0xE60E1319);
         c.drawRoundRect(lx + 6, ly + 6, lx + lw - 6, ly + lh - 6, 14, 14, p);
         p.setTextAlign(Paint.Align.LEFT);
-        float ts = Math.min(lh / 11.5f, w / 62f);
+        // every numbered badge must have its line in the legend: pick the column count that gives the biggest readable text
+        final int n = items.size();
+        float availH = lh - 12 - 34, availW = lw - 40;
+        float bestTs = 0f; int bestCols = 3;
+        p.setTypeface(Typeface.DEFAULT); p.setTextSize(100f);
+        float widest = 1f;
+        for (int i = 0; i < n; i++) widest = Math.max(widest, p.measureText(items.get(i).text));
+        float numW = p.measureText("88");
+        for (int cols = 2; cols <= 6; cols++) {
+            int perCol = (n + cols - 1) / cols;
+            float colW = availW / cols;
+            float byH = availH / (perCol * 1.2f + 1.6f);
+            // text width at size ts = widest * ts / 100 ; plus the number column
+            float byW = (colW - 6) / ((widest + numW * 1.0f) / 100f);
+            float ts = Math.min(Math.min(byH, byW), w / 55f);
+            if (ts > bestTs) { bestTs = ts; bestCols = cols; }
+        }
+        float ts = Math.max(6f, bestTs);
+        int cols = bestCols, perCol = (n + cols - 1) / cols;
         p.setTypeface(Typeface.DEFAULT_BOLD); p.setTextSize(ts * 1.1f); p.setColor(0xFFFFD23F);
-        float x0 = lx + 20, y = ly + 14 + ts * 1.1f;
+        float x0 = lx + 20, y = ly + 10 + ts * 1.1f;
         c.drawText(heading, x0, y, p);
-        p.setTypeface(Typeface.DEFAULT); p.setTextSize(ts); p.setColor(0xFFE9EDF2);
-        int cols = 3, perCol = (items.size() + cols - 1) / cols;
-        float colW = (lw - 40) / cols;
-        float top = y + ts * 0.6f;
-        for (int i = 0; i < items.size(); i++) {
+        p.setTypeface(Typeface.DEFAULT); p.setTextSize(ts);
+        float colW = availW / cols;
+        float top = y + ts * 0.5f;
+        float lineH = Math.min(ts * 1.2f, (ly + lh - 8 - ts - top) / Math.max(1, perCol));
+        for (int i = 0; i < n; i++) {
             int col = i / perCol, row = i % perCol;
-            float xx = x0 + col * colW, yy = top + (row + 1) * ts * 1.18f;
-            if (yy > ly + lh - 10) continue;
-            p.setColor(0xFFFFD23F);
+            float xx = x0 + col * colW, yy = top + (row + 1) * lineH;
+            p.setTypeface(Typeface.DEFAULT_BOLD); p.setColor(0xFFFFD23F);
             c.drawText(String.valueOf(i + 1), xx, yy, p);
-            p.setColor(0xFFE9EDF2);
-            String t = items.get(i).text;
-            float maxw = colW - ts * 2.2f;
-            while (p.measureText(t) > maxw && t.length() > 4) t = t.substring(0, t.length() - 2);
-            c.drawText(t, xx + ts * 1.7f, yy, p);
+            p.setTypeface(Typeface.DEFAULT); p.setColor(0xFFE9EDF2);
+            c.drawText(items.get(i).text, xx + ts * 1.8f, yy, p);
         }
         p.setColor(0x99FFFFFF); p.setTextSize(ts * 0.85f); p.setTextAlign(Paint.Align.RIGHT);
-        c.drawText("toque para fechar", lx + lw - 16, ly + lh - 14, p);
+        c.drawText("toque para fechar", lx + lw - 12, ly + lh - 10, p);
     }
 }

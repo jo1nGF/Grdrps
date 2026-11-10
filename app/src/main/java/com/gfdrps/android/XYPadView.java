@@ -88,7 +88,10 @@ public final class XYPadView extends View {
         p.setStrokeWidth(3f);
         p.setColor(on ? col : 0x66FFFFFF);
         c.drawPath(path, p);
-        float cx = tx * w, cy = (1f - ty) * h;
+        // a replayed gesture (or MIDI) moves the effect without a finger: show where it is
+        boolean follow = on && !touching;
+        float cx = (follow ? ef.x : tx) * w, cy = (1f - (follow ? ef.y : ty)) * h;
+        if (follow) { p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(5f); p.setColor(0xFFFF4D5E); c.drawCircle(cx, cy, Math.min(w, h) * 0.1f, p); }
         if (on) {
             p.setStyle(Paint.Style.FILL);
             p.setColor((col & 0x00FFFFFF) | 0x33000000);
@@ -113,8 +116,14 @@ public final class XYPadView extends View {
             int ms = Math.round(d.sync ? d.shownMs : (float) Fx.Delay.msForX(ef.x));
             extra = " · " + (d.sync ? Fx.Delay.DIV_NAMES[Fx.Delay.divIndex(ef.x)] + " SYNC · " : "") + (ms >= 1000 ? String.format(java.util.Locale.US, "%.2f s", ms / 1000f) : ms + " ms");
         }
+        if (fxIndex == Fx.DELAY || fxIndex == Fx.REVERB) {
+            Fx.Tone tn = fxIndex == Fx.DELAY ? ((Fx.Delay) ef).tone : ((Fx.Reverb) ef).tone;
+            if (tn.mode != 0) extra += " · " + Fx.Tone.NAMES[tn.mode] + " " + fmtHz(tn.cutoffHz());
+        }
         c.drawText((master ? "MASTER · " : "") + Fx.NAMES[fxIndex] + extra + (latch ? "  (hold)" : ""), w * 0.03f, h * 0.1f, p);
     }
+
+    static String fmtHz(double hz) { return hz >= 1000 ? String.format(java.util.Locale.US, "%.1fk", hz / 1000.0) : Math.round(hz) + ""; }
 
     /** A small sketch of what the effect does along x, just for orientation. */
     private float curve(float x, Fx.Effect ef) {

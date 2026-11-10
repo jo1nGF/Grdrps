@@ -47,6 +47,13 @@ public final class Fx {
         }
     }
 
+    /** The LP/HP tone of a Delay or Reverb; null for the other effects. */
+    public static Tone toneOf(Effect e) {
+        if (e instanceof Delay) return ((Delay) e).tone;
+        if (e instanceof Reverb) return ((Reverb) e).tone;
+        return null;
+    }
+
     public static Effect create(int type, int rate) {
         switch (type) {
             case DIST: return new Distortion(rate);
@@ -127,6 +134,38 @@ public final class Fx {
         }
     }
 
+    /** State variable filter used as the optional low-pass / high-pass on a delay's or reverb's wet signal. */
+    public static final class Tone {
+        /** 0 = off, 1 = low-pass, 2 = high-pass. */
+        public volatile int mode = 0;
+        /** 0..1 position on a 40 Hz .. 18 kHz exponential scale. */
+        public volatile float cut = 0.5f;
+        private float s1, s2, g = 0.1f;
+        private final int rate;
+        public Tone(int rate) { this.rate = rate; }
+        public static double hz(float c, int rate) { return Math.min(40.0 * Math.pow(450.0, Math.max(0f, Math.min(1f, c))), rate * 0.45); }
+        public double cutoffHz() { return hz(cut, rate); }
+        public static final String[] NAMES = {"OFF", "LP", "HP"};
+        /** Call once per block: recomputes the coefficient from the (smoothed) cutoff. */
+        void block() {
+            float gt = (float) Math.tan(Math.PI * cutoffHz() / rate);
+            g += (gt - g) * 0.5f;
+        }
+        float run(float v0) {
+            int m = mode;
+            if (m == 0) { s1 = s2 = 0f; return v0; }
+            final float k = 1.0f;
+            float a1 = 1f / (1f + g * (g + k)), a2 = g * a1, a3 = g * a2;
+            float v3 = v0 - s2;
+            float v1 = a1 * s1 + a2 * v3;
+            float v2 = s2 + a2 * s1 + a3 * v3;
+            s1 = 2 * v1 - s1; s2 = 2 * v2 - s2;
+            if (!(s1 == s1) || !(s2 == s2) || Math.abs(s1) > 1e6f) { s1 = s2 = 0f; return 0f; }
+            return m == 1 ? v2 : v0 - k * v1 - v2;
+        }
+        void clear() { s1 = s2 = 0f; }
+    }
+
     /** Feedback delay. x = time (10 ms..4 s in whole ms, or a tempo-synced note length with sync), y = feedback. Short times make comb filters; long times ping-pong. */
     public static final class Delay extends Effect {
         public static final double MIN_MS = 10.0, MAX_MS = 4000.0;
@@ -137,11 +176,15 @@ public final class Fx {
         public volatile boolean sync = false;
         /** Delay time currently used, in ms (for the UI). */
         public volatile float shownMs = 250f;
+        /** Optional low-pass / high-pass on the echoes (also inside the feedback loop, so repeats get darker or thinner). */
+        public final Tone tone;
+        private final Tone toneR;
         private final float[] bl, br;
         private int w;
         private float cur;
         public Delay(int rate) {
             super(rate);
+            tone = new Tone(rate); toneR = new Tone(rate);
             int len = (int) (rate * (MAX_MS / 1000.0)) + 64;
             bl = new float[len];
             br = new float[len];
@@ -165,6 +208,7 @@ public final class Fx {
             // short times: straight feedback = a comb filter / metallic echo; longer times: ping-pong between L and R
             final float pp = (float) Math.max(0.0, Math.min(1.0, (ms - 60.0) / 90.0));
             float fb = (0.1f + 0.85f * y) * (active ? 1f : 0.55f);
+            tone.block(); toneR.mode = tone.mode; toneR.cut = tone.cut; toneR.block();
             for (int i = 0; i < n; i++) {
                 cur += (target - cur) * slew;
                 float rp = w - cur;
@@ -174,6 +218,7 @@ public final class Fx {
                 float f = rp - i0;
                 float dl = bl[i0] + (bl[i1] - bl[i0]) * f;
                 float dr = br[i0] + (br[i1] - br[i0]) * f;
+                dl = tone.run(dl); dr = toneR.run(dr);
                 float inL = active ? l[i] : 0f;
                 float inR = active ? r[i] : 0f;
                 bl[w] = clip(inL + (dl * (1f - pp) + dr * pp) * fb);
@@ -197,6 +242,8 @@ public final class Fx {
      * release the tail rings out naturally (at most ~2.5 s) and then goes completely silent.
      */
     public static final class Reverb extends Effect {
+        /** Optional low-pass / high-pass on the wet signal. */
+        public final Tone tone, toneR;
         // all lengths in samples at 29761 Hz (Dattorro's reference rate), scaled to the engine rate
         private static final double REF = 29761.0;
         private static final int[] IN_AP = {142, 107, 379, 277};
@@ -239,6 +286,7 @@ public final class Fx {
 
         public Reverb(int rate) {
             super(rate);
+            tone = new Tone(rate); toneR = new Tone(rate);
             double k = rate / REF;
             for (int i = 0; i < 4; i++) inAp[i] = new Line(sc(IN_AP[i], k));
             pre = new Line(Math.max(8, (int) (0.022 * rate)));
@@ -268,6 +316,7 @@ public final class Fx {
             pre.clear(); apL.clear(); apR.clear(); d1L.clear(); d1R.clear();
             ap2L.clear(); ap2R.clear(); d2L.clear(); d2R.clear();
             lpIn = lpL = lpR = dcIn = 0f; wet = 0f;
+            tone.clear(); toneR.clear();
             clean = true;
         }
 
@@ -285,6 +334,7 @@ public final class Fx {
                 return;
             }
             clean = false;
+            tone.block(); toneR.mode = tone.mode; toneR.cut = tone.cut; toneR.block();
             if (active) {
                 float rtT = 0.6f * (float) Math.pow(24.0, x);
                 rt60 += (rtT - rt60) * 0.05f;
@@ -353,8 +403,8 @@ public final class Fx {
                         - d1L.tap(tapL[4]) - ap2L.tap(tapL[5]) - d2L.tap(tapL[6]);
                 float outR = d1L.tap(tapR[0]) + d1L.tap(tapR[1]) - ap2L.tap(tapR[2]) + d2L.tap(tapR[3])
                         - d1R.tap(tapR[4]) - ap2R.tap(tapR[5]) - d2R.tap(tapR[6]);
-                l[i] += outL * wet * 0.6f;
-                r[i] += outR * wet * 0.6f;
+                l[i] += tone.run(outL) * wet * 0.6f;
+                r[i] += toneR.run(outR) * wet * 0.6f;
             }
             if (!(lpL == lpL) || !(lpR == lpR) || Math.abs(lpL) > 1e4f || Math.abs(lpR) > 1e4f) clear();
         }

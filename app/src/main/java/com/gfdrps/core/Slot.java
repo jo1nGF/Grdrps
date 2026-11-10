@@ -5,7 +5,7 @@ public final class Slot {
     public static final int SLICER = 0, LOOPER = 1, BOW = 2, TAPE = 3, SCRATCH = 4, ARP = 5, KEYBOARD = 6, LOOPPLAYER = 7;
     public static final String[] MODE_NAMES = {"Slicer", "Looper", "Bow", "Tape", "Scratch", "Arpeggiator", "Keyboard", "Loop Player"};
     public static final int VOICES = 12, POLY = 8, KEYS = 24, MAX_BLOCK = 512;
-    public static final int[] DIVS = {0, 4, 8, 16, 32};
+    public static final int[] DIVS = {0, 4, 6, 8, 12, 16, 24, 32, 48, 64};
 
     final int rate;
     public volatile Sample sample;
@@ -53,7 +53,14 @@ public final class Slot {
     private final int[] arpTmp = new int[16], arpOrd = new int[16];
     private final float[] arpVel = new float[16];
     private final double[] bounds = new double[2];
-    private Voice looperV;
+    private final Voice[] looperVs = new Voice[4];
+    private boolean isLooperVoice(Voice v) { for (Voice x : looperVs) if (x == v) return true; return false; }
+    private void releaseLoopers() {
+        for (int k = 0; k < looperVs.length; k++) {
+            Voice v = looperVs[k];
+            if (v != null && v.active && v.touchId == -3) { if (latch) v.latched = true; else v.release(); }
+        }
+    }
 
     // latch / quantize / slicer auto-play
     /** Latch: lifting the finger (or changing play mode) leaves the sound running until the next gesture. */
@@ -76,6 +83,10 @@ public final class Slot {
     private float curGL, curGR;
     // visual feedback (read by UI)
     public final float[] playheads = new float[VOICES];
+    /** Fingers currently held in this slot (live and replayed gestures), for the UI: id, x, y (position in the sample). Gesture-replay ids are >= GestureRecorder.ID_OFFSET. */
+    public final int[] uiId = new int[16];
+    public final float[] uiX = new float[16], uiY = new float[16];
+    public volatile int uiN;
     public volatile int activeVoices;
     public volatile float level;
 
@@ -182,7 +193,7 @@ public final class Slot {
         tCount = 0;
         for (int i = 0; i < tVoice.length; i++) tVoice[i] = null;
         nextStepBeat = -1;
-        looperV = null;
+        java.util.Arrays.fill(looperVs, null);
         autoPlay = false;
         pN = 0; physDown = 0; arpLatched = false; nextAutoBeat = -1;
     }
@@ -190,7 +201,7 @@ public final class Slot {
     /** Releases every note kept alive by the latch (audio thread). exceptLooper keeps the looper voice for reuse. */
     private void releaseLatched(boolean exceptLooper) {
         for (Voice v : voices) {
-            if (v.active && v.latched && !(exceptLooper && v == looperV)) { v.latched = false; v.release(); }
+            if (v.active && v.latched && !(exceptLooper && isLooperVoice(v))) { v.latched = false; v.release(); }
         }
     }
 
@@ -203,7 +214,7 @@ public final class Slot {
         latch = on;
         if (!on) {
             releaseLatched(false);
-            if (looperV != null && looperV.active && looperV.touchId == -3 && tCount == 0) looperV.release();
+            if (tCount == 0) for (Voice v : looperVs) if (v != null && v.active && v.touchId == -3) v.release();
             if (arpLatched && physDown == 0) { tCount = 0; arpLatched = false; nextStepBeat = -1; }
         }
     }
@@ -356,6 +367,7 @@ public final class Slot {
                 v.vel = vel;
                 v.trigger(id, frame);
                 tVoice[k] = v;
+                arpSlice = sliceIndex(x); arpFlash = 1f;
                 break;
             }
             case LOOPER:
@@ -367,7 +379,7 @@ public final class Slot {
                 if (live >= 4 && oldest != null) oldest.fastRelease();
                 Voice v = prepare(Voice.BOW, frame);
                 v.center = x * (len - 1);
-                v.grainLen = bowGrain();
+                v.grainTgt = bowGrain();
                 v.gPos[0] = v.gPos[1] = v.center;
                 v.gPh[0] = 0f; v.gPh[1] = 0.5f;
                 v.vel = 0.2f + 0.6f * (1f - y);                          // height = volume
@@ -448,7 +460,7 @@ public final class Slot {
             case BOW:
                 if (v != null && v.active) {
                     v.center = x * (len - 1);
-                    v.grainLen = bowGrain();
+                    v.grainTgt = bowGrain();
                     v.vel = 0.2f + 0.6f * (1f - y);
                 }
                 break;
@@ -502,56 +514,71 @@ public final class Slot {
     }
 
     /**
-     * Looper: the first two fingers set the loop region. Crossing them (second finger left of the first)
-     * plays it in reverse. With a quantize value (4/8/16/32) the markers snap to that grid, 0 = free.
+     * Looper: fingers work in pairs (1+2, 3+4, 5+6, 7+8): each pair sets its own loop region, so up to four loops
+     * play together. Crossing a pair (second finger left of the first) plays that loop in reverse. A lone last
+     * finger makes a short loop. With a quantize value (4/8/16/32) the markers snap to that grid, 0 = free.
      */
     private void updateLooper(long frame, Sample s) {
         if (s == null) return;
         int len = s.length();
-        Voice lv = looperV;
+        int loops = (tCount + 1) / 2;
+        if (loops > looperVs.length) loops = looperVs.length;
         if (tCount == 0) {
-            if (lv != null && lv.active && lv.kind == Voice.PLAY && lv.touchId == -3) {
-                if (latch) lv.latched = true; else lv.release();
+            for (int k = 0; k < looperVs.length; k++) {
+                Voice lv = looperVs[k];
+                if (lv != null && lv.active && lv.kind == Voice.PLAY && lv.touchId == -3) {
+                    if (latch) lv.latched = true; else lv.release();
+                }
             }
             return;
         }
-        if (lv != null) lv.latched = false;
-        double a, b;
-        boolean reverse = false;
         int q = div;
-        if (tCount >= 2) {
-            a = Math.min(tX[0], tX[1]);
-            b = Math.max(tX[0], tX[1]);
-            reverse = tX[1] < tX[0];
-        } else {
-            a = tX[0];
-            b = a + (q > 0 ? 1.0 / q : 1.0 / 32.0);
+        for (int k = 0; k < looperVs.length; k++) {
+            Voice lv = looperVs[k];
+            if (k >= loops) {      // finger of this pair was lifted: its loop ends
+                if (lv != null && lv.active && lv.touchId == -3 && !lv.releasing) { if (latch) lv.latched = true; else lv.release(); }
+                continue;
+            }
+            if (lv != null) lv.latched = false;
+            int f0 = 2 * k, f1 = 2 * k + 1;
+            double a, b;
+            boolean reverse = false;
+            if (f1 < tCount) {
+                a = Math.min(tX[f0], tX[f1]);
+                b = Math.max(tX[f0], tX[f1]);
+                reverse = tX[f1] < tX[f0];
+            } else {
+                a = tX[f0];
+                b = a + (q > 0 ? 1.0 / q : 1.0 / 32.0);
+            }
+            if (q > 0) {
+                a = Math.round(a * q) / (double) q;
+                b = Math.round(b * q) / (double) q;
+                if (b - a < 0.5 / q) b = a + 1.0 / q;
+            }
+            if (b > 1.0) { double w = b - a; b = 1.0; a = Math.max(0.0, b - w); }
+            double st = a * len, en = b * len;
+            if (en - st < 64) { en = Math.min(len, st + 64); st = Math.max(0, en - 64); }
+            double sp = reverse ? -pitchRatio() : pitchRatio();
+            if (!(lv != null && lv.active && lv.touchId == -3 && !lv.releasing)) {
+                lv = prepare(Voice.PLAY, frame);
+                lv.loop = true; lv.vel = loops > 1 ? 0.75f : 0.9f;
+                lv.start = st; lv.end = en; lv.speed = sp; lv.speedTgt = sp;
+                lv.pingPong = pingPong;
+                lv.pos = reverse ? en - 1 : st;
+                lv.trigger(-3, frame);
+                looperVs[k] = lv;
+            } else {
+                lv.pingPong = pingPong;
+                double sg = sp;
+                if (pingPong) sg = Math.copySign(Math.abs(sp), lv.speedTgt != 0 ? lv.speedTgt : sp);
+                lv.speedTgt = sg; lv.glide = pingPong ? 0f : 0.02f;
+                if (pingPong) lv.speed = sg;
+                lv.setRegion(st, en);
+            }
+            tVoice[f0] = lv;
+            if (f1 < tCount) tVoice[f1] = lv;
         }
-        if (q > 0) {
-            a = Math.round(a * q) / (double) q;
-            b = Math.round(b * q) / (double) q;
-            if (b - a < 0.5 / q) b = a + 1.0 / q;
-        }
-        if (b > 1.0) { double w = b - a; b = 1.0; a = Math.max(0.0, b - w); }
-        double st = a * len, en = b * len;
-        if (en - st < 64) { en = Math.min(len, st + 64); st = Math.max(0, en - 64); }
-        double sp = reverse ? -pitchRatio() : pitchRatio();
-        if (!(lv != null && lv.active && lv.touchId == -3 && !lv.releasing)) {
-            lv = prepare(Voice.PLAY, frame);
-            lv.loop = true; lv.vel = 0.9f;
-            lv.start = st; lv.end = en; lv.speed = sp; lv.speedTgt = sp;
-            lv.pingPong = pingPong;
-            lv.pos = reverse ? en - 1 : st;
-            lv.trigger(-3, frame);
-            looperV = lv;
-        } else {
-            lv.pingPong = pingPong;
-            if (pingPong) sp = Math.copySign(Math.abs(sp), lv.speedTgt != 0 ? lv.speedTgt : sp);     // the bounce owns the direction
-            lv.speedTgt = sp; lv.glide = pingPong ? 0f : 0.02f;       // direction change glides through zero, no click
-            if (pingPong) lv.speed = sp;
-            lv.setRegion(st, en);
-        }
-        for (int i = 0; i < tCount; i++) tVoice[i] = lv;
     }
 
     // ---------------------------------------------------------------- arpeggiator step
@@ -666,7 +693,7 @@ public final class Slot {
                     Voice tv = tVoice[i];
                     if (tv != null && tv.active) { if (latch) tv.latched = true; else tv.release(); }
                 }
-                if (looperV != null && looperV.active && looperV.touchId == -3) { if (latch) looperV.latched = true; else looperV.release(); }
+                releaseLoopers();
                 tCount = 0; physDown = 0; arpLatched = false; nextStepBeat = -1; pN = 0;
                 if (!latch && autoPlay) { autoPlay = false; releaseAuto(); }
             }
@@ -731,6 +758,11 @@ public final class Slot {
             curBeat = beat + n / framesPerBeat;
         }
         arpFlash *= 0.92f;
+        {
+            int cnt = Math.min(tCount, uiId.length);
+            for (int i = 0; i < cnt; i++) { uiId[i] = tIds[i]; uiX[i] = tX[i]; uiY[i] = tY[i]; }
+            uiN = cnt;
+        }
         float p = pan;
         float gl = (float) Math.cos(p * Math.PI * 0.5) * 1.414f * 0.7071f;
         float gr = (float) Math.sin(p * Math.PI * 0.5) * 1.414f * 0.7071f;
@@ -763,6 +795,7 @@ public final class Slot {
         Sample s = sample;
         for (Voice v : voices) {
             if (!v.active) continue;
+            if (v.kind == Voice.BOW) v.grainTgt = bowGrain();
             if (v.touchId != -4) v.setEnv(attack, decay, sustain, release);     // ADSR sliders act on held notes live
             if (v.touchId == -2 && s != null) {
                 if (!playing) { v.release(); continue; }

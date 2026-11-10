@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5 (build 6)
+- **Gestos reproduzidos aparecem na tela**: os dedos gravados viram anéis vermelhos (com linha vertical) na waveform e a posição do efeito gravado é mostrada no pad XY com um anel vermelho.
+- **Slicer**: a fatia tocada brilha em branco, como no Arpeggiator (também quando vem de auto-play ou de toque quantizado).
+- **Bow**: o slider de tamanho do grão agora é fluido (o tamanho desliza em tempo real, inclusive com a nota segurada, e a altura do dedo / volume não dá mais degraus).
+- **Looper**: corrigido — cada par de dedos faz um loop próprio (1+2, 3+4, 5+6, 7+8): até 4 loops ao mesmo tempo, cada um com seu reverse, e soltar um par só encerra aquele loop. A tela pinta uma região para cada par.
+- **Refazer (redo)** ao lado do desfazer; uma edição nova limpa a pilha de refazer.
+- **Deslizar nos botões**: o zoom aumenta/diminui continuamente ao deslizar sobre o botão; a taxa do Arp, a grade do Q e as fatias (0 4 6 8 12 16 24 32 48 64) mudam ao deslizar na horizontal.
+- **Mais subdivisões**: taxa/grade 1/1, 1/2, 1/4, 1/8, 1/16, 1/32, 1/64 e tercinas (1/2T, 1/4T, 1/8T, 1/16T, 1/32T).
+- **LP/HP no Delay e no Reverb**: botão LP/HP (toque = desligado → passa-baixas → passa-altas; deslize = frequência de corte, 40 Hz–18 kHz). No Delay o filtro age também na realimentação (repetições mais escuras ou mais finas). Salvo no projeto.
+- **Mais tracks**: botão "+" no rodapé adiciona tracks (até 12); a barra de tracks rola. O projeto salva o número de tracks.
+- **Tela de gravação**: ao gravar (microfone ou mix) aparece uma tela com a waveform sendo gravada, medidor de nível, tempo e botões SALVAR / CANCELAR. Para o resample do mix a barra fica só sobre o rodapé, então dá para continuar tocando.
+- **Ajuda**: a legenda agora ajusta colunas e tamanho do texto para caber, então todo número da tela tem sua explicação.
+
 ## 1.4 (build 5)
 - **Looper**: botão P-P liga o ping-pong (o loop vai e volta entre os dedos, sem saltos).
 - **Bow**: altura do dedo = volume; slider azul novo = tamanho do grão (de granular a pad); no máximo 4 notas.

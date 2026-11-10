@@ -25,7 +25,7 @@ Para compilar localmente: `./gradlew assembleDebug` (precisa do Android SDK e JD
 | **Bow** | Grão do som em loop sob o dedo (textura/pad); altura muda o tamanho do grão |
 | **Tape** | Arraste para direita acelera, esquerda inverte; soltar = tape stop |
 | **Scratch** | O dedo arrasta o playhead (largura da tela = 0,25–2 s de áudio conforme a altura); movimento suave, dedo parado = silêncio |
-| **Arpeggiator** | Toque várias fatias: o padrão toca nas fatias sob os dedos, travado no BPM. Direção UP/DN/U-D/RND/ORD (botão rosa), taxa 1/4–1/32 (botão amarelo), usa o ADSR do slot |
+| **Arpeggiator** | Toque várias fatias: o padrão toca nas fatias sob os dedos, travado no BPM. Direção UP/DN/U-D/RND/ORD (botão rosa), taxa 1/1–1/64 com tercinas (botão amarelo: toque ou deslize), usa o ADSR do slot |
 | **Keyboard** | 24 teclas cromáticas; ∞ sustenta; curva = legato (glide) |
 | **Loop Player** | Loop travado no BPM do projeto; toque liga/desliga (ou gate) |
 | Efeitos XY | Distortion, **Filter LP/HP** (toque de novo no ícone do filtro alterna LP/HP e o ícone muda; a curva real aparece no pad), Amp Mod, Delay de 10 ms a 4 s (1 ms nas faixas curtas = filtro pente) com botão sync de BPM, **Reverb "cloud" (plate de Dattorro)**, cauda longa e sem metálico, decay de 0,6 a 14 s (x) e wet (y) que some por completo ao soltar; "M" aplica no master; "hold" trava o efeito ligado. Entrada e saída dos efeitos são suavizadas (sem estalos) |

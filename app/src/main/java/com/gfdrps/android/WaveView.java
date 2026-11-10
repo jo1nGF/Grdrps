@@ -23,6 +23,7 @@ public final class WaveView extends View {
     private int shaderMode = -1;
 
     private static final int MAXP = 10;
+    private final float[] loopXs = new float[MAXP];
     private final boolean[] down = new boolean[MAXP];
     private final float[] fx = new float[MAXP], fy = new float[MAXP], sx = new float[MAXP];
 
@@ -53,6 +54,15 @@ public final class WaveView extends View {
         float centre = viewStart + 0.5f / zoom;
         zoom = zoom >= 16f ? 1f : zoom * 2f;
         viewStart = zoom == 1f ? 0f : Math.max(0f, Math.min(1f - 1f / zoom, centre - 0.5f / zoom));
+        invalidate();
+    }
+    /** Sets the zoom continuously (1..32), keeping the centre of the view where it is. */
+    public void setZoom(float z) {
+        z = Math.max(1f, Math.min(32f, z));
+        float centre = viewStart + 0.5f / zoom;
+        zoom = z;
+        viewStart = z <= 1.001f ? 0f : Math.max(0f, Math.min(1f - 1f / zoom, centre - 0.5f / zoom));
+        if (z <= 1.001f) zoom = 1f;
         invalidate();
     }
     public void resetZoom() { zoom = 1f; viewStart = 0f; invalidate(); }
@@ -287,14 +297,14 @@ public final class WaveView extends View {
         }
 
         if (mode == Slot.SLICER) drawSlices(c, w, h, s);
-        if (mode == Slot.ARP) {
-            drawSlices(c, w, h, s);
+        if (mode == Slot.ARP) drawSlices(c, w, h, s);
+        if (mode == Slot.ARP || mode == Slot.SLICER) {
             if (s.arpFlash > 0.02f && s.arpSlice >= 0) {
                 float[] b = s.sliceBoundaries();
                 int i = Math.max(0, Math.min(b.length, s.arpSlice));       // the slice count may have just changed
                 float x0 = vx(i == 0 ? 0f : b[i - 1], w), x1 = vx(i >= b.length ? 1f : b[i], w);
                 p.setStyle(Paint.Style.FILL);
-                p.setColor(((int) (s.arpFlash * 110) << 24) | 0xFF4FA3);
+                p.setColor(((int) (Math.min(1f, s.arpFlash) * 150) << 24) | 0xFFFFFF);       // the played slice lights up white
                 c.drawRect(x0, 0, x1, h, p);
             }
         }
@@ -328,11 +338,17 @@ public final class WaveView extends View {
                     break;
             }
         }
-        if (mode == Slot.LOOPER && count >= 1) {
+        if (mode == Slot.LOOPER && s.uiN >= 1) {
+            // fingers pair up in the order they went down (1+2, 3+4 ...): one loop region per pair
             p.setStyle(Paint.Style.FILL);
-            p.setColor((accent & 0x00FFFFFF) | 0x33000000);
-            float a = count >= 2 ? minX : minX, b = count >= 2 ? maxX : Math.min(1f, minX + 1f / 32f);
-            c.drawRect(a * w, 0, b * w, h, p);
+            float[] ord = loopXs; int k = 0;
+            int un = Math.min(s.uiN, Math.min(ord.length, s.uiX.length));
+            for (int i = 0; i < un; i++) ord[k++] = vx(s.uiX[i], w) / w;     // same order the engine pairs them in
+            for (int pr = 0; pr * 2 < k; pr++) {
+                float a = ord[pr * 2], b = pr * 2 + 1 < k ? ord[pr * 2 + 1] : Math.min(1f, a + 1f / 32f);
+                p.setColor((accent & 0x00FFFFFF) | (pr % 2 == 0 ? 0x44000000 : 0x2E000000));
+                c.drawRect(Math.min(a, b) * w, 0, Math.max(a, b) * w, h, p);
+            }
         }
         // finger rings
         p.setStyle(Paint.Style.STROKE);
@@ -340,6 +356,22 @@ public final class WaveView extends View {
         p.setColor(0xFFFFFFFF);
         for (int i = 0; i < MAXP; i++) if (down[i]) c.drawCircle(fx[i] * w, fy[i] * h, Math.min(w, h) * 0.07f, p);
 
+        // replayed gestures: the fingers the recorder is "holding" show up as rings too (live fingers are drawn above)
+        {
+            int un = Math.min(s.uiN, s.uiId.length);
+            float rad = Math.min(w, h) * 0.07f;
+            for (int i = 0; i < un; i++) {
+                if (s.uiId[i] < com.gfdrps.core.GestureRecorder.ID_OFFSET) continue;
+                float gx = vx(s.uiX[i], w), gy = s.uiY[i] * h;
+                if (gx < -rad || gx > w + rad) continue;
+                p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(4f); p.setColor(0xFFFF4D5E);
+                c.drawCircle(gx, gy, rad, p);
+                p.setStrokeWidth(2f); p.setColor(0x99FF4D5E);
+                c.drawLine(gx, 0, gx, h, p);
+                p.setStyle(Paint.Style.FILL); p.setColor(0x55FF4D5E);
+                c.drawCircle(gx, gy, rad * 0.35f, p);
+            }
+        }
         // playheads of live voices
         p.setStrokeWidth(2f);
         p.setColor(0xDDFFFFFF);
