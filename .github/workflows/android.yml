@@ -11,34 +11,95 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Histórico completo é necessário para sabermos qual ZIP foi
+          # modificado por último (via git log). Shallow clone faria todos
+          # os arquivos aparecerem com o mesmo timestamp.
+          fetch-depth: 0
 
-      - name: Replace project files with ZIP contents
+      # Escolhe o ZIP: se só houver um, usa ele; se houver vários, escolhe
+      # o commitado mais recentemente (fallback para mtime em untracked).
+      - name: Detect ZIP archive
+        id: detect-zip
         shell: bash
         run: |
           set -euo pipefail
+          mapfile -t zips < <(find . -maxdepth 1 -type f -iname '*.zip' | sort)
 
-          archive="GfDrps-v1.9.zip"
-          if [ ! -f "$archive" ]; then
-            echo "ZIP not found: $archive"
+          if [ "${#zips[@]}" -eq 0 ]; then
+            echo "::error::No .zip file found in repo root."
+            exit 1
+          fi
+
+          if [ "${#zips[@]}" -eq 1 ]; then
+            archive="${zips[0]#./}"
+            echo "Only one archive found: $archive"
+            echo "archive=$archive" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Multiple .zip files found in repo root; selecting the most recent one:"
+          for z in "${zips[@]}"; do
+            echo "  - ${z#./}"
+          done
+
+          latest_ts=-1
+          latest_mtime=-1
+          archive=""
+
+          for z in "${zips[@]}"; do
+            # Timestamp do último commit que alterou este arquivo.
+            ts="$(git log -1 --format=%ct -- "$z" 2>/dev/null || true)"
+            [ -z "$ts" ] && ts=0
+            mtime="$(stat -c %Y "$z")"
+            printf '  %s | commit_ts=%s | mtime=%s\n' "${z#./}" "$ts" "$mtime"
+
+            # Primário: commit mais recente. Desempate: mtime.
+            if [ "$ts" -gt "$latest_ts" ] || \
+               { [ "$ts" -eq "$latest_ts" ] && [ "$mtime" -gt "$latest_mtime" ]; }; then
+              latest_ts="$ts"
+              latest_mtime="$mtime"
+              archive="${z#./}"
+            fi
+          done
+
+          echo "Selected archive: $archive"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Replace project files with ZIP contents
+        shell: bash
+        env:
+          ARCHIVE: ${{ steps.detect-zip.outputs.archive }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$ARCHIVE" ]; then
+            echo "::error::ZIP not found: $ARCHIVE"
             exit 1
           fi
 
           tmp_dir="$(mktemp -d)"
           trap 'rm -rf "$tmp_dir"' EXIT
 
-          unzip -q "$archive" -d "$tmp_dir"
+          unzip -q "$ARCHIVE" -d "$tmp_dir"
 
           source_dir="$tmp_dir"
-          if [ -d "$tmp_dir/$(basename "${archive%.zip}")" ]; then
-            source_dir="$tmp_dir/$(basename "${archive%.zip}")"
+          archive_base="$(basename "${ARCHIVE%.zip}")"
+          if [ -d "$tmp_dir/$archive_base" ]; then
+            source_dir="$tmp_dir/$archive_base"
           elif [ "$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1 ]; then
             source_dir="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
           fi
 
-          # Remove current repo contents but keep .git and .github
-          find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name '.github' -exec rm -rf {} +
+          # Preserva .git, .github e o ZIP escolhido (os demais ZIPs somem
+          # agora — só o selecionado precisa sobreviver para ser apagado
+          # de forma explícita no fim do job).
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name '.git' \
+            ! -name '.github' \
+            ! -name "$ARCHIVE" \
+            -exec rm -rf {} +
 
-          # Copy extracted ZIP contents into repo root
           cp -a "$source_dir"/. .
 
       - uses: actions/setup-java@v4
@@ -46,7 +107,6 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      # The audio engine is plain Java, so it is tested on the CI machine before the APK is built.
       - name: Audio engine self-test
         run: |
           mkdir -p out
@@ -60,14 +120,19 @@ jobs:
           chmod +x gradlew
           ./gradlew --no-daemon assembleDebug
 
-      - name: Delete ZIP after build
-        if: always()
-        run: |
-          rm -f GfDrps-v1.9.zip
-
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: GfDrps-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # Remove o ZIP escolhido (também em caso de falha em etapas anteriores).
+      - name: Delete ZIP after build
+        if: always()
+        env:
+          ARCHIVE: ${{ steps.detect-zip.outputs.archive }}
+        run: |
+          if [ -n "${ARCHIVE:-}" ] && [ -f "$ARCHIVE" ]; then
+            rm -fv "$ARCHIVE"
+          fi
